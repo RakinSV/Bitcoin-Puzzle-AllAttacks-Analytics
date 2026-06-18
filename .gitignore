@@ -15,6 +15,7 @@ puzzle_status_cache.json
 nonce_sigs.json
 *.log
 reports/
+logs/
 
 # ── Recovered keys — NEVER commit a found private key ────
 FOUND_KEY*.txt

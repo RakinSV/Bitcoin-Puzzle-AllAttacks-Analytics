@@ -36,8 +36,11 @@ RE_SPEED  = re.compile(r"speed=\s*([\d.]+)\s*M/?s", re.I)
 RE_BENCH  = re.compile(r"Speed:\s*([\d.]+)\s*Mkeys", re.I)
 RE_HOPS   = re.compile(r"hops=\s*([\d,]+)")
 RE_DP     = re.compile(r"\bdp=\s*(\d+)")
+# A real key recovery always prints an actual 0x… scalar (main.py "Key = 0x…",
+# Kangaroo "FOUND k = 0x…", or the FOUND_KEY.txt "Private key (hex): 0x…").
+# Do NOT match the bare word "SOLVED" — puzzle_status lists solved puzzles and
+# would false-trigger the banner.
 RE_FOUND  = re.compile(r"(?:FOUND\s+k\s*=\s*|Key\s*=\s*|Private key \(hex\):\s*)(0x[0-9a-fA-F]+)")
-RE_SOLVED = re.compile(r"SOLVED|FOUND k =", re.I)
 
 QSS = """
 QMainWindow, QWidget { background:#0d1117; color:#e6edf3;
@@ -93,6 +96,7 @@ class MainWindow(QMainWindow):
         self.t0 = None
         self.logfile = None
         self.run_buttons = []
+        self.active_btn = None
         self.timer = QTimer(self); self.timer.setInterval(1000)
         self.timer.timeout.connect(self._tick)
         self._build()
@@ -174,13 +178,13 @@ class MainWindow(QMainWindow):
         return val
 
     def _bottom_bar(self):
+        # No global Stop button — each action's own button turns into Stop while
+        # it runs (see _wire_run / _toggle).
         bar = QHBoxLayout()
-        self.btn_stop = QPushButton("■  Stop"); self.btn_stop.setObjectName("stop")
-        self.btn_stop.clicked.connect(self.stop); self.btn_stop.setEnabled(False)
         b_logs = QPushButton("📂 Open logs"); b_logs.clicked.connect(lambda: _open(LOGS))
         b_rep = QPushButton("📂 Open reports"); b_rep.clicked.connect(self._open_reports)
         b_clear = QPushButton("Clear log"); b_clear.clicked.connect(lambda: self.log.clear())
-        bar.addWidget(self.btn_stop); bar.addStretch(1)
+        bar.addStretch(1)
         bar.addWidget(b_clear); bar.addWidget(b_logs); bar.addWidget(b_rep)
         return bar
 
@@ -198,12 +202,11 @@ class MainWindow(QMainWindow):
         if inputs:
             v.addLayout(inputs)
         btn = QPushButton("▶  Run"); btn.setObjectName("primary" if primary else "run")
-        btn.clicked.connect(lambda: self._start_builder(builder, title))
+        self._wire_run(btn, builder, title)
         row = QHBoxLayout(); row.addStretch(1); row.addWidget(btn)
         v.addLayout(row)
-        self.run_buttons.append(btn)
         layout.addWidget(box)
-        return box
+        return btn
 
     # ====================================================================
     #  pages
@@ -216,7 +219,7 @@ class MainWindow(QMainWindow):
         v.addWidget(box)
         self._refresh_data_status()
 
-        self._card(v, "First-time full research",
+        self.btn_research = self._card(v, "First-time full research",
                    "Run every offline + on-chain analysis across all 150 puzzles and write "
                    "the results to reports/. Do this once to populate your data.",
                    lambda: worker_argv("run_all_analyses"), primary=True)
@@ -253,9 +256,8 @@ class MainWindow(QMainWindow):
                       "Kangaroo needs the target's public key but solves a 71-bit range in minutes.")
         desc.setObjectName("desc"); desc.setWordWrap(True); rb.addWidget(desc)
         btn = QPushButton("▶  Start solving"); btn.setObjectName("primary")
-        btn.clicked.connect(lambda: self._start_builder(self._build_solve, "Solve"))
+        self._wire_run(btn, self._build_solve, "Solve")
         rr = QHBoxLayout(); rr.addStretch(1); rr.addWidget(btn); rb.addLayout(rr)
-        self.run_buttons.append(btn)
         v.addWidget(runbox)
         v.addStretch(1)
         self._solve_mode_changed()
@@ -341,8 +343,7 @@ class MainWindow(QMainWindow):
         self.ms_auto = QCheckBox("Auto-fire Kangaroo on hit"); self.ms_auto.setChecked(True)
         g.addWidget(self.ms_auto, 2, 0, 1, 2)
         b = QPushButton("▶  Start sniper"); b.setObjectName("run")
-        b.clicked.connect(lambda: self._start_builder(self._build_sniper, "Multi-sniper"))
-        self.run_buttons.append(b)
+        self._wire_run(b, self._build_sniper, "Multi-sniper")
         rr = QHBoxLayout(); rr.addStretch(1); rr.addWidget(b); g.addLayout(rr, 3, 0, 1, 4)
         v.addWidget(box)
 
@@ -356,8 +357,7 @@ class MainWindow(QMainWindow):
         self.mon_ws = QCheckBox("WebSocket (sub-second)"); self.mon_ws.setChecked(True)
         mg.addWidget(self.mon_ws, 1, 2)
         mb = QPushButton("▶  Start monitor"); mb.setObjectName("run")
-        mb.clicked.connect(lambda: self._start_builder(self._build_monitor, "Monitor"))
-        self.run_buttons.append(mb)
+        self._wire_run(mb, self._build_monitor, "Monitor")
         mr = QHBoxLayout(); mr.addStretch(1); mr.addWidget(mb); mg.addLayout(mr, 2, 0, 1, 4)
         v.addWidget(mbox)
         v.addStretch(1)
@@ -400,16 +400,33 @@ class MainWindow(QMainWindow):
     # ====================================================================
     #  run engine
     # ====================================================================
-    def _start_builder(self, builder, label):
+    def _wire_run(self, btn, builder, label):
+        """Make a button start its task, then turn into Stop while it runs."""
+        btn._run_text = btn.text()
+        btn._run_obj = btn.objectName()
+        btn._builder = builder
+        btn._label = label
+        btn.clicked.connect(lambda: self._toggle(btn))
+        self.run_buttons.append(btn)
+
+    def _toggle(self, btn):
+        if self.proc is not None:
+            if self.active_btn is btn:      # this button is the running one -> stop
+                self.stop()
+            return                          # another task is running; ignore
         try:
-            prog, args = builder()
+            prog, args = btn._builder()
         except ValueError as e:
             QMessageBox.warning(self, "Cannot start", str(e)); return
-        self.start(prog, args, label)
+        self.active_btn = btn
+        self.start(prog, args, btn._label)
+
+    def _restyle(self, btn):
+        btn.style().unpolish(btn); btn.style().polish(btn); btn.update()
 
     def start(self, prog, args, label):
         if self.proc is not None:
-            QMessageBox.information(self, "Busy", "A task is already running. Stop it first."); return
+            return
         self.found.setVisible(False)
         self.stat_speed.setText("—"); self.stat_hops.setText("—"); self.stat_dp.setText("—")
         self._set(self.stat_status, "running", "#3fb950"); self.stat_task.setText(label)
@@ -426,9 +443,13 @@ class MainWindow(QMainWindow):
         self.proc.finished.connect(self._on_finished)
         self.proc.start(prog, args)
         self.t0 = time.time(); self.timer.start()
-        self.btn_stop.setEnabled(True)
+
+        # the active button becomes a Stop control; the rest are disabled
         for b in self.run_buttons:
-            b.setEnabled(False)
+            if b is self.active_btn:
+                b.setText("■  Stop"); b.setObjectName("stop"); self._restyle(b)
+            else:
+                b.setEnabled(False)
 
     def stop(self):
         if self.proc is not None:
@@ -452,8 +473,8 @@ class MainWindow(QMainWindow):
         m = RE_DP.search(line)
         if m: self.stat_dp.setText(m.group(1))
         m = RE_FOUND.search(line)
-        if m or RE_SOLVED.search(line):
-            self._found(m.group(1) if m else "(see log)")
+        if m:
+            self._found(m.group(1))
 
     def _found(self, key):
         self.found.setText(f"🎉  KEY FOUND:  {key}\nSaved to FOUND_KEY.txt — verify before broadcasting.")
@@ -468,7 +489,12 @@ class MainWindow(QMainWindow):
         if self.logfile:
             self.logfile.close(); self.logfile = None
         self.proc = None
-        self.btn_stop.setEnabled(False)
+        # restore the active button and re-enable everything
+        if self.active_btn is not None:
+            self.active_btn.setText(self.active_btn._run_text)
+            self.active_btn.setObjectName(self.active_btn._run_obj)
+            self._restyle(self.active_btn)
+            self.active_btn = None
         for b in self.run_buttons:
             b.setEnabled(True)
         self._refresh_data_status(); self._refresh_reports_list()
@@ -525,8 +551,7 @@ class MainWindow(QMainWindow):
             QMessageBox.Yes | QMessageBox.No)
         if r == QMessageBox.Yes:
             self.nav.setCurrentRow(0)
-            prog, args = worker_argv("run_all_analyses")
-            self.start(prog, args, "First-time full research")
+            self._toggle(self.btn_research)
 
     # ====================================================================
     #  helpers

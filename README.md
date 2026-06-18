@@ -97,6 +97,16 @@ distinguished points, and the log stream in real time. No terminal required.
 
 ![Desktop app](docs/app_screenshot.png)
 
+| Dashboard | Solve | On-chain recon |
+|---|---|---|
+| ![Dashboard](docs/screens/dashboard.png) | ![Solve](docs/screens/solve.png) | ![Recon](docs/screens/onchain.png) |
+| **Live watch** | **GPU tools** | |
+| ![Live watch](docs/screens/watch.png) | ![GPU tools](docs/screens/gpu.png) | |
+
+Every action streams its output to the panel **and** to `logs/<timestamp>_<task>.log`.
+The action's own button turns into a **Stop** while it runs. On first launch with
+no data, the app offers to research everything (full sweep over all 150 puzzles).
+
 **Download a prebuilt bundle** (no Python needed — you only need your GPU's
 OpenCL driver installed) from the [Releases page](https://github.com/RakinSV/Bitcoin-Puzzle-AllAttacks-Analytics/releases):
 Windows `.zip` and Linux `.tar.gz`, built automatically by GitHub Actions.

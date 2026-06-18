@@ -39,3 +39,6 @@ dist/
 Thumbs.db
 .DS_Store
 desktop.ini
+
+# Wiki staging (pushed to the .wiki repo, not the code repo)
+.wiki/

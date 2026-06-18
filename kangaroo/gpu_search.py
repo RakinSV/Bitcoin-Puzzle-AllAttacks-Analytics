@@ -21,9 +21,14 @@ import pyopencl as cl
 from pathlib import Path
 from typing import Optional
 
-# ---- Путь к ядру BitCrack ----
+# ---- secp256k1 + SHA256 + RIPEMD160 OpenCL kernel ----
+# Vendored from BitCrack (bitcrack.cl), (c) 2018 Ben Richard, MIT license.
+# See THIRD_PARTY_NOTICES.md. Kept local so the repo / packaged build are
+# self-contained; falls back to a BitCrack checkout if present.
 _HERE    = Path(__file__).parent
-_KERNEL  = _HERE.parent / 'BitCrack' / 'CLKeySearchDevice' / 'bitcrack.cl'
+_KERNEL  = _HERE / 'bitcrack.cl'
+if not _KERNEL.exists():
+    _KERNEL = _HERE.parent / 'BitCrack' / 'CLKeySearchDevice' / 'bitcrack.cl'
 
 # ---- secp256k1 константы ----
 _P  = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEFFFFFC2F

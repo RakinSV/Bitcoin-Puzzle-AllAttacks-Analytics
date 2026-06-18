@@ -28,6 +28,12 @@ keyhunt/
 # ── Internal dev notes (kept locally, not published) ─────
 CLAUDE.md
 
+# ── PyInstaller build outputs ────────────────────────────
+build/
+dist/
+*.zip
+*.tar.gz
+
 # ── OS noise ─────────────────────────────────────────────
 Thumbs.db
 .DS_Store

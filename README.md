@@ -65,6 +65,8 @@ This is the centerpiece. 256-bit modular arithmetic, written for GPUs that have 
 ### GPU performance engineering — finding the cliff
 A parameter sweep across `threads × blocks × points/thread` revealed something the textbook doesn't mention: a **hard VRAM "performance cliff."** On the 8 GB RX 6600, throughput climbs smoothly to a peak around **31M work-items (~406 Mkeys/s)** — then, just past **~33M**, it **collapses by ~4×** (to ~110 Mkeys/s) as the working set blows the cache/allocator budget. The shipped defaults were sitting *past* the peak on the downslope; re-tuning to the safe side of the cliff was a free **+12%**. The bundled `--bench-sweep` now maps the curve and refuses to bench guaranteed-loser configs.
 
+![The VRAM performance cliff on an RX 6600](docs/vram_cliff_rx6600.png)
+
 ---
 
 ## The attack & analytics suite
@@ -87,7 +89,26 @@ Nine independent attacks, each one a falsifiable hypothesis about how the keys *
 
 ---
 
-## Quick start
+## Desktop app
+
+There's a native desktop GUI (PySide6/Qt) — pick a puzzle, choose a mode
+(GPU lottery / Kangaroo / full analysis sweep), and watch live throughput, hops,
+distinguished points, and the log stream in real time. No terminal required.
+
+![Desktop app](docs/app_screenshot.png)
+
+**Download a prebuilt bundle** (no Python needed — you only need your GPU's
+OpenCL driver installed) from the [Releases page](https://github.com/RakinSV/Bitcoin-Puzzle-AllAttacks-Analytics/releases):
+Windows `.zip` and Linux `.tar.gz`, built automatically by GitHub Actions.
+
+Run from source instead:
+
+```bash
+pip install PySide6 pyopencl numpy requests
+python app_entry.py          # or: RUN_APP.bat on Windows
+```
+
+## Quick start (CLI / batch)
 
 ```bash
 pip install pyopencl numpy requests
@@ -98,6 +119,7 @@ Windows users get one-click batch files:
 
 | Batch file | What it does |
 |------------|--------------|
+| `RUN_APP.bat` | **Launch the desktop app** (PySide6 GUI) |
 | `RUN_EVERYTHING.bat` | **Run every analysis over all 150 puzzles, straight to `reports/`** (no params) |
 | `START_LOTTERY.bat` | GPU brute-force lottery — **prompts for which puzzle** to attack |
 | `CHOOSE_PUZZLE.bat` | Live unsolved-puzzle list + pick a target |

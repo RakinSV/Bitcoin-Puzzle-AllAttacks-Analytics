@@ -1,0 +1,76 @@
+name: Build executables
+
+# Builds the desktop app into standalone bundles for Windows and Linux.
+# - Runs on every tag (v*) and can be triggered manually.
+# - On a tag, the packaged bundles are attached to a GitHub Release.
+#
+# Windows cannot cross-compile a Linux binary (or vice-versa); each OS is built
+# on its own native runner, which is exactly what this matrix does.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            artifact: BitcoinPuzzle-windows
+          - os: ubuntu-latest
+            artifact: BitcoinPuzzle-linux
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install OpenCL headers/loader (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y opencl-headers ocl-icd-opencl-dev
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install PySide6 numpy requests pyinstaller pyopencl
+
+      - name: Build (PyInstaller)
+        run: pyinstaller BitcoinPuzzle.spec --noconfirm
+
+      - name: Package bundle
+        shell: bash
+        run: |
+          cd dist
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            7z a "../${{ matrix.artifact }}.zip" BitcoinPuzzle
+          else
+            tar czf "../${{ matrix.artifact }}.tar.gz" BitcoinPuzzle
+          fi
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}.*
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/**/*
+          generate_release_notes: true

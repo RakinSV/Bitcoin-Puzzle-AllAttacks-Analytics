@@ -38,6 +38,21 @@ ALL_PUZZLES = sorted(all_puzzle_numbers())
 # ---------------------------------------------------------------------------
 # subprocess helper — capture stdout+stderr, never raise, decode cp1251-safely
 # ---------------------------------------------------------------------------
+def _resolve(cmd):
+    """Map a ["analysis/foo.py", ...args] command to a runnable argv.
+
+    In dev we just run the .py with the current interpreter. In a frozen
+    PyInstaller build there is no interpreter for arbitrary .py files, so we
+    re-invoke the app binary with the --module marker (app_entry routes it
+    through runpy)."""
+    if getattr(sys, "frozen", False):
+        module = cmd[0].replace("/", ".").replace("\\", ".")
+        if module.endswith(".py"):
+            module = module[:-3]
+        return [sys.executable, "--module", module] + cmd[1:]
+    return [PY] + cmd
+
+
 def run(cmd, timeout=600):
     """Run a command, return (exit_code, text). Errors are captured, not raised."""
     try:
@@ -45,7 +60,7 @@ def run(cmd, timeout=600):
         # regardless of the Windows console code page (cp1251).
         env = dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUTF8="1")
         p = subprocess.run(
-            [PY] + cmd, cwd=ROOT, capture_output=True, timeout=timeout, env=env,
+            _resolve(cmd), cwd=ROOT, capture_output=True, timeout=timeout, env=env,
         )
         raw = p.stdout + p.stderr
         try:

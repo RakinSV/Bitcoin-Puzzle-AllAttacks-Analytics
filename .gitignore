@@ -1,0 +1,34 @@
+# ── Python ───────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+
+# ── Runtime state & caches (regenerable) ─────────────────
+*.pkl
+checkpoint.json
+coverage.json
+fingerprint_cache.json
+puzzle_status_cache.json
+nonce_sigs.json
+*.log
+reports/
+
+# ── Recovered keys — NEVER commit a found private key ────
+FOUND_KEY*.txt
+pubkey_puzzle*.txt
+
+# ── Third-party tools (separate projects & licenses) ─────
+# Build these yourself; not redistributed here.
+BitCrack/
+keyhunt/
+
+# ── Internal dev notes (kept locally, not published) ─────
+CLAUDE.md
+
+# ── OS noise ─────────────────────────────────────────────
+Thumbs.db
+.DS_Store
+desktop.ini

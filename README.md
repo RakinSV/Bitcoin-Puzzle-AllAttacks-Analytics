@@ -6,6 +6,17 @@ It is also a study in **intellectual honesty**. Most of the "shortcuts" people d
 
 > **Status:** the GPU engine, the full attack suite, and the analytics pipeline are complete and tested (31 unit tests pass). No puzzle key is "solved" here by magic — the creator used genuine randomness, and this repo demonstrates *why* the only viable routes are brute force, Pollard's Kangaroo on an exposed public key, and mempool sniping.
 
+## 📖 Documentation
+
+A full project wiki lives in [`docs/wiki/`](docs/wiki/Home.md):
+
+- [Architecture](docs/wiki/Architecture.md) — codebase layout & the one-binary GUI/worker model
+- [GPU Kangaroo Engine](docs/wiki/GPU-Kangaroo-Engine.md) — the OpenCL kernel, optimizations, and the VRAM cliff
+- [Attacks & Theories](docs/wiki/Attacks-and-Theories.md) — the nine attacks and their verdicts
+- [Desktop App](docs/wiki/Desktop-App.md) — the GUI, packaging, and CI
+- [Problems & Solutions](docs/wiki/Problems-and-Solutions.md) — the real engineering war stories
+- [Future Ideas](docs/wiki/Future-Ideas.md) — where this could go next
+
 ---
 
 ## Why this is interesting

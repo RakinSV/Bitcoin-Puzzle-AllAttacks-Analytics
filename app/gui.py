@@ -14,6 +14,7 @@ everything (full sweep over all 150 puzzles + live puzzle status).
 
 import os
 import re
+import subprocess
 import sys
 import time
 from datetime import datetime
@@ -504,9 +505,18 @@ class MainWindow(QMainWindow):
         self._append("\n[stopping…]\n", "#d29922")
         # A worker (e.g. the full sweep) spawns its own children; killing only
         # the direct child would orphan them. Kill the whole tree on Windows.
+        # Use subprocess (not os.system) so a windowed build doesn't flash a
+        # console, and never let a kill failure stop us from killing the child.
         pid = int(self.proc.processId() or 0)
         if pid and sys.platform.startswith("win"):
-            os.system(f"taskkill /T /F /PID {pid} >nul 2>&1")
+            try:
+                subprocess.run(
+                    ["taskkill", "/T", "/F", "/PID", str(pid)],
+                    capture_output=True, timeout=10,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                )
+            except Exception:
+                pass
         self.proc.kill()
 
     def _on_output(self):

@@ -67,18 +67,25 @@ The discrete-log-in-an-interval problem: given `Q = k·G` with `k ∈ [a, b]`, r
 
 Measured: **~631 Mhop/s sustained on an AMD RX 6600** (raw hop throughput).
 
-> ### ⚠️ Known issue — the engine does not yet converge above ~37 bits
-> Verified by solving real puzzles with their public keys: **#30, #35 and #37 are
-> recovered correctly**, but **#40, #45, #50 and #60 are not** — each runs ~30–40×
-> the theoretically required work and still fails to report a key. The cause is
-> under investigation and is *not* raw speed: hop throughput and distinguished-point
-> detection are both healthy.
+> ### ⚠️ Known issue — the engine does not converge above ~40 bits
+> Verified by solving real puzzles with their public keys: **#30, #37 and #40 are
+> recovered correctly** (#40 in ~20s), but **#45, #50 and #60 are not**.
 >
-> Any earlier claim in this repo that a 71-bit key "falls in 2–3 minutes" was a
-> theoretical extrapolation from hop rate — **it was never verified end-to-end and
-> is not currently true.** Treat the Kangaroo engine as working only for small
-> intervals until this is fixed. The hop-rate numbers, the field arithmetic, and
-> the GPU tuning below are measured and stand on their own.
+> A root cause was found and fixed: the herds *were* colliding, but because a
+> distinguished point stores only the x-coordinate — shared by `P` and `-P` — the
+> host applied one reconstruction formula per herd pair and turned real collisions
+> into garbage keys (a 256-bit "key" for a 40-bit puzzle). That is fixed, and #40
+> went from never solving to solving in seconds. See
+> [issue #1](https://github.com/RakinSV/Bitcoin-Puzzle-AllAttacks-Analytics/issues/1).
+>
+> The remaining suspect for #45+: DP sampling happens at each kangaroo's own batch
+> boundary, so two kangaroos that merge onto the same trail only record the same
+> point if their step phases agree (~1/STEPS_BATCH). The proper fix is Montgomery
+> batch inversion across the herd, so the DP test becomes a property of the point
+> rather than of a step counter.
+>
+> Any earlier claim here that a 71-bit key "falls in 2–3 minutes" was extrapolated
+> from hop rate and **never verified end-to-end**. It is not currently true.
 
 ### A hand-written OpenCL secp256k1 kernel (`kangaroo/gpu_kangaroo.cl`)
 This is the centerpiece. 256-bit modular arithmetic, written for GPUs that have no native big-int support:

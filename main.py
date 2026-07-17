@@ -879,9 +879,10 @@ def main():
                         help='Tame kangaroos count (default: 8192)')
     parser.add_argument('--n-wild',   type=int, default=8192,
                         help='Wild kangaroos count (default: 8192)')
-    parser.add_argument('--dp-bits',         type=int, default=14,
-                        help='Distinguished point filter bits (default: 14); '
-                             'engine auto-adjusts upward if n_total is large')
+    parser.add_argument('--dp-bits',         type=int, default=0,
+                        help='Distinguished point filter bits. Default 0 = pick '
+                             'automatically from the range so DP detection does '
+                             'not dominate the solve. Override only if you know why.')
     parser.add_argument('--precompute-tame', action='store_true',
                         help='Pre-compute tame kangaroo DPs and save to tame_dps_<puzzle>.pkl '
                              '(no pubkey needed). Load later with --tame-dps for 2x faster solve.')

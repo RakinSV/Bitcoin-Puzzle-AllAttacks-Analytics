@@ -15,7 +15,7 @@ It is also a study in **intellectual honesty**: most "shortcuts" people imagine 
 
 ## TL;DR results
 
-- A **hand-written OpenCL Pollard's Kangaroo engine** runs at **~631 Mhop/s on an old AMD RX 6600**. With a known public key, a 71-bit interval falls in **2–3 minutes**.
+- A **hand-written OpenCL Pollard's Kangaroo engine** runs at **~631 Mhop/s on an old AMD RX 6600**. ⚠️ **Known issue:** it only converges below ~37 bits today (verified: #30/#35/#37 solve; #40+ do not). The often-quoted "71 bits in 2–3 minutes" was extrapolated from hop rate and is **not currently true**.
 - **Nine attacks** all agree the puzzle creator used **genuine randomness** — no RNG/HD-wallet/brainwallet/nonce shortcut exists. Knowing that *rigorously* is the real payoff.
 - The only realistically winnable scenario on one consumer GPU is **sniping a freshly-exposed public key** from the mempool — which is exactly why the kernel was tuned so hard.
 

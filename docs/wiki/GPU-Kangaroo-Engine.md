@@ -2,7 +2,13 @@
 
 The compute core: a hand-written OpenCL implementation of **Pollard's Kangaroo** for the interval ECDLP on secp256k1. Given a public key `Q = k·G` with `k ∈ [a, b]`, it recovers `k` in `~2·√(b−a)` group operations instead of `b−a`.
 
-Measured: **~631 Mhop/s sustained on an AMD RX 6600.** A 71-bit interval with a known public key falls in **2–3 minutes**.
+Measured: **~631 Mhop/s sustained on an AMD RX 6600** (raw hop throughput).
+
+> **⚠️ Known issue — the engine does not converge above ~37 bits.** Verified against
+> real puzzles with their public keys: #30/#35/#37 are recovered correctly; #40, #45,
+> #50 and #60 are not, each burning ~30–40x the required work without reporting a key.
+> The "2–3 minutes for 71 bits" figure below was extrapolated from hop rate and was
+> **never verified end-to-end** — it is not currently achievable. Under investigation.
 
 ## The kernel (`kangaroo/gpu_kangaroo.cl`)
 
@@ -31,7 +37,7 @@ A counter-intuitive finding: raising the kangaroo herd 8× (24,576 → 196,608) 
 
 | Scenario | Work | Time on one RX 6600 |
 |---|---|---|
-| #71 with known pubkey | ~2³⁶ hops | 2–3 minutes |
+| #71 with known pubkey | ~2³⁶ hops | *theoretical* ~2–3 min — **not achieved; engine stalls >37 bits** |
 | #80 with known pubkey | ~2⁴⁰ hops | ~30 minutes |
 | #90 with known pubkey | ~2⁴⁵ hops | ~hours–days |
 | #125 / #130 (pubkeys exposed) | ~2⁶²⁺ hops | centuries |

@@ -39,14 +39,32 @@ _KERNEL = _HERE / 'gpu_kangaroo.cl'
 N_TAME      = 8192     # tame kangaroos
 N_WILD      = 8192     # wild kangaroos (+ same for neg)
 W_SIZE      = 32       # jump table size
-STEPS_CALL  = 2048     # hops per kernel call (1 x 2048 Jacobian batch;
-                       # STEPS_BATCH=2048 in .cl amortizes 1 inversion over
-                       # 2048 hops -> +6% hop-rate vs the old 4x512 split)
-DP_BITS     = 14       # distinguished point filter bits
-# Formula: 2^DP_BITS >= n_total * STEPS_CALL / MAX_DP_OUT  (avoid buffer overflow)
-# For n_total=24576 (default): 2^14=16384 >= 24576*2048/4096=12288  OK, 0% overflow
-# For n_total=49152 (16384x3): need dp_bits=15 (auto-adjusted in __init__)
+# Kernel geometry — MUST mirror gpu_kangaroo.cl.
+# A kangaroo's affine x-coordinate only exists after the deferred inversion at a
+# batch boundary, so DP sampling happens N_BATCHES times per call per kangaroo —
+# NOT once per hop. Everything about DP density follows from that.
+STEPS_BATCH = 2048     # hops between affine conversions (= DP sampling points)
+N_BATCHES   = 1        # batches per kernel call
+STEPS_CALL  = STEPS_BATCH * N_BATCHES   # hops per kernel call
+DP_BITS     = 0        # 0 = auto-pick from the range (see _auto_dp_bits)
 MAX_DP_OUT  = 4096     # max DP results per kernel call
+
+
+def _auto_dp_bits(n_total: int, rng_size: int) -> int:
+    """Choose dp_bits so DP detection doesn't dominate the solve.
+
+    A kangaroo records a DP roughly every STEPS_BATCH * 2^dp_bits hops, so after
+    the herds collide it takes about n_total * STEPS_BATCH * 2^dp_bits hops for
+    the collision to actually be *noticed*. The collision itself costs only
+    ~2*sqrt(rng_size). With a fixed dp_bits=14 that detection tail was ~100x the
+    collision cost on mid-size puzzles — the search worked but never reported.
+
+    Aim for detection ~15% of the collision cost, clamped to a sane range.
+    """
+    import math
+    collision = 2.0 * math.sqrt(max(rng_size, 2))
+    target    = 0.15 * collision / max(1, n_total * STEPS_BATCH)
+    return int(max(1, min(24, round(math.log2(max(target, 2.0))))))
 
 
 def _int_to_u256(k: int) -> np.ndarray:
@@ -99,12 +117,20 @@ class KangarooEngine:
         self.n_wild   = n_wild
         self.n_total  = n_tame + n_wild * 2   # tame + wild + neg
 
-        # Auto-adjust dp_bits to prevent GPU output buffer overflow.
-        # Constraint: n_total * STEPS_CALL / 2^dp_bits <= MAX_DP_OUT
-        # => dp_bits >= log2(n_total * STEPS_CALL / MAX_DP_OUT)
+        # dp_bits=0 (the default) means "pick a good one for this range".
+        if not dp_bits:
+            dp_bits = _auto_dp_bits(self.n_total, k_end - k_start + 1)
+            print(f"[KangarooGPU] dp_bits auto-selected: {dp_bits} "
+                  f"(DP every ~{STEPS_BATCH * (1 << dp_bits):,} hops/kangaroo)")
+
+        # Guard the GPU output buffer. DPs are emitted only at batch boundaries,
+        # so a call produces at most n_total * N_BATCHES / 2^dp_bits of them.
+        # (The old constraint used STEPS_CALL here, as if every hop were sampled.
+        # That demanded ~11 bits more than necessary, made DPs ~2000x too sparse
+        # and let post-collision detection dominate the whole solve.)
         import math as _math
         _min_dp = max(1, _math.ceil(_math.log2(
-            max(1, self.n_total * STEPS_CALL / MAX_DP_OUT))))
+            max(1, self.n_total * N_BATCHES / MAX_DP_OUT))))
         if dp_bits < _min_dp:
             print(f"[KangarooGPU] dp_bits={dp_bits} too small for "
                   f"n_total={self.n_total} — auto-adjusted to {_min_dp}")

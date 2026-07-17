@@ -24,7 +24,7 @@ A full project wiki lives in [`docs/wiki/`](docs/wiki/Home.md):
 Solving puzzle #71 (a 71-bit key, ~7.1 BTC at stake) by blind brute force on a single consumer GPU would take on the order of **tens of thousands of years**. So the interesting work is *not* "spin a brute-forcer" — it's:
 
 1. **Can the keys be predicted?** If the creator used a weak RNG, an HD-wallet seed, a brainwallet passphrase, or reused an ECDSA nonce, the key falls in milliseconds. → *A battery of attacks that each test one hypothesis and falsify it with evidence.*
-2. **Can we exploit an exposed public key?** The moment anyone spends from a puzzle address, its public key hits the mempool. With a known pubkey, the problem collapses from a 2^71 search to a **2^35.5 Pollard's Kangaroo walk** — minutes, not millennia. → *A custom GPU Kangaroo engine + a live mempool sniper that races to claim the key.*
+2. **Can we exploit an exposed public key?** The moment anyone spends from a puzzle address, its public key hits the mempool. With a known pubkey, the problem collapses *in theory* from a 2^71 search to a **2^35.5 Pollard's Kangaroo walk**. → *A custom GPU Kangaroo engine + a live mempool sniper.* **In practice the engine currently only converges below ~37 bits — see the known issue below.**
 3. **How fast can a single RX 6600 actually go?** → *A hand-written OpenCL secp256k1 kernel, profiled and tuned to the metal.*
 
 ---
@@ -65,7 +65,20 @@ The discrete-log-in-an-interval problem: given `Q = k·G` with `k ∈ [a, b]`, r
 - **Distinguished Points** — trails are recorded only at points whose x-coordinate has `dp_bits` trailing zero bits; the DP-bit budget is **auto-tuned** to the herd size to keep the GPU output buffer from overflowing.
 - **Jump table in local memory (LDS)** — the precomputed jump points live in on-chip shared memory, not global VRAM.
 
-Measured: **~631 Mhop/s sustained on an AMD RX 6600.** A puzzle with a *known public key* in the 71-bit range falls in **2–3 minutes**.
+Measured: **~631 Mhop/s sustained on an AMD RX 6600** (raw hop throughput).
+
+> ### ⚠️ Known issue — the engine does not yet converge above ~37 bits
+> Verified by solving real puzzles with their public keys: **#30, #35 and #37 are
+> recovered correctly**, but **#40, #45, #50 and #60 are not** — each runs ~30–40×
+> the theoretically required work and still fails to report a key. The cause is
+> under investigation and is *not* raw speed: hop throughput and distinguished-point
+> detection are both healthy.
+>
+> Any earlier claim in this repo that a 71-bit key "falls in 2–3 minutes" was a
+> theoretical extrapolation from hop rate — **it was never verified end-to-end and
+> is not currently true.** Treat the Kangaroo engine as working only for small
+> intervals until this is fixed. The hop-rate numbers, the field arithmetic, and
+> the GPU tuning below are measured and stand on their own.
 
 ### A hand-written OpenCL secp256k1 kernel (`kangaroo/gpu_kangaroo.cl`)
 This is the centerpiece. 256-bit modular arithmetic, written for GPUs that have no native big-int support:
@@ -153,7 +166,7 @@ Or drive the CLI directly:
 # Brute-force lottery on any puzzle
 python main.py --puzzle 71 --mode gpu --pure-random --pool-avoid
 
-# Pollard's Kangaroo against a known public key  (minutes, not millennia)
+# Pollard's Kangaroo against a known public key (verified for small intervals only - see known issue)
 python main.py --puzzle 71 --mode kangaroo --pubkey 02....
 
 # Map your GPU's throughput curve and find the VRAM cliff

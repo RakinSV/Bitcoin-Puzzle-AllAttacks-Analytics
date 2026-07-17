@@ -58,8 +58,11 @@ POOL_PROGRESS = {
 
 
 def _get_pool_end(puzzle_num: int, pz: dict) -> int:
-    """Returns absolute key offset up to which the pool has scanned (or
-    pz['start'] if unknown for this puzzle — i.e. no avoidance)."""
+    """Absolute key offset up to which the btcpuzzle.info pool has scanned.
+
+    Returns 0 when no pool data is known for this puzzle — callers treat that
+    as "no avoidance" via the `pool_end > k_start` guard.
+    """
     info = POOL_PROGRESS.get(puzzle_num)
     if not info:
         return 0

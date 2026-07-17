@@ -27,7 +27,27 @@ from PySide6.QtWidgets import (
     QScrollArea, QMessageBox, QFrame,
 )
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+def _code_root():
+    """Where the bundled code/read-only data lives."""
+    if getattr(sys, "frozen", False):
+        return sys._MEIPASS                     # <bundle>/_internal
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def _data_root():
+    """Where user-visible output goes (logs, reports, found keys).
+
+    In a frozen build this must be the folder holding the executable, NOT the
+    bundle internals — otherwise everything the user is supposed to find gets
+    written inside _internal/ where nobody looks.
+    """
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(os.path.abspath(sys.executable))
+    return _code_root()
+
+
+CODE_ROOT = _code_root()
+ROOT = _data_root()                              # workers run with this as cwd
 LOGS = os.path.join(ROOT, "logs")
 REPORTS = os.path.join(ROOT, "reports")
 
@@ -84,7 +104,7 @@ def worker_argv(module, args=None):
     args = args or []
     if getattr(sys, "frozen", False):
         return sys.executable, ["--module", module] + args
-    return sys.executable, [os.path.join(ROOT, "app_entry.py"), "--module", module] + args
+    return sys.executable, [os.path.join(CODE_ROOT, "app_entry.py"), "--module", module] + args
 
 
 class MainWindow(QMainWindow):
@@ -97,6 +117,7 @@ class MainWindow(QMainWindow):
         self.logfile = None
         self.run_buttons = []
         self.active_btn = None
+        self.found_key = False
         self.timer = QTimer(self); self.timer.setInterval(1000)
         self.timer.timeout.connect(self._tick)
         self._build()
@@ -133,7 +154,10 @@ class MainWindow(QMainWindow):
         self.stack.addWidget(self._page_watch())
         self.stack.addWidget(self._page_gpu())
         self.stack.addWidget(self._page_reports())
-        rl.addWidget(self.stack)
+        # The page area must get the lion's share of the height — with no
+        # stretch factor it collapsed to a cramped scrolling strip while the
+        # log took everything, which made the action buttons hard to reach.
+        rl.addWidget(self.stack, 3)
 
         rl.addWidget(self._stats_bar())
 
@@ -144,7 +168,8 @@ class MainWindow(QMainWindow):
 
         self.log = QPlainTextEdit(); self.log.setReadOnly(True)
         self.log.setMaximumBlockCount(8000)
-        rl.addWidget(self.log, 1)
+        self.log.setMinimumHeight(120)
+        rl.addWidget(self.log, 2)
 
         rl.addLayout(self._bottom_bar())
 
@@ -167,6 +192,12 @@ class MainWindow(QMainWindow):
         self.stat_dp     = self._stat(g, 3, "DPs", "—")
         self.stat_time   = self._stat(g, 4, "Elapsed", "0s")
         self.stat_task   = self._stat(g, 5, "Task", "—")
+        # The running task's own button turns into Stop, but it may live on a
+        # different page. This status-bar Stop is always reachable, and only
+        # exists while something is actually running.
+        self.stop_bar = QPushButton("■  Stop task"); self.stop_bar.setObjectName("stop")
+        self.stop_bar.clicked.connect(self.stop); self.stop_bar.setVisible(False)
+        g.addWidget(self.stop_bar, 0, 6)
         return box
 
     def _stat(self, grid, col, label, value):
@@ -413,7 +444,13 @@ class MainWindow(QMainWindow):
         if self.proc is not None:
             if self.active_btn is btn:      # this button is the running one -> stop
                 self.stop()
-            return                          # another task is running; ignore
+            else:                           # never fail silently
+                QMessageBox.information(
+                    self, "A task is already running",
+                    f"'{self.stat_task.text()}' is still running.\n\n"
+                    "Stop it first — use its own Stop button, or the Stop in the "
+                    "Live status bar.")
+            return
         try:
             prog, args = btn._builder()
         except ValueError as e:
@@ -433,6 +470,8 @@ class MainWindow(QMainWindow):
         self._open_logfile(label)
         self._append(f"$ {os.path.basename(prog)} {' '.join(args)}\n", "#6e7681")
 
+        self.found_key = False
+        os.makedirs(ROOT, exist_ok=True)
         self.proc = QProcess(self)
         self.proc.setProcessChannelMode(QProcess.MergedChannels)
         env = QProcessEnvironment.systemEnvironment()
@@ -441,19 +480,34 @@ class MainWindow(QMainWindow):
         self.proc.setWorkingDirectory(ROOT)
         self.proc.readyReadStandardOutput.connect(self._on_output)
         self.proc.finished.connect(self._on_finished)
-        self.proc.start(prog, args)
-        self.t0 = time.time(); self.timer.start()
+        # Without this, a worker that fails to START never emits finished(), so
+        # the UI would stay "running" with every button disabled — forever.
+        self.proc.errorOccurred.connect(self._on_error)
 
-        # the active button becomes a Stop control; the rest are disabled
+        # Put the UI into the "running" state BEFORE start(). On Windows a
+        # failed start emits errorOccurred synchronously from inside start(),
+        # which releases the UI — if we disabled the buttons afterwards they
+        # would stay dead with no process to stop.
+        self.t0 = time.time(); self.timer.start()
         for b in self.run_buttons:
             if b is self.active_btn:
                 b.setText("■  Stop"); b.setObjectName("stop"); self._restyle(b)
             else:
                 b.setEnabled(False)
+        self.stop_bar.setVisible(True)
+
+        self.proc.start(prog, args)
 
     def stop(self):
-        if self.proc is not None:
-            self._append("\n[stopping…]\n", "#d29922"); self.proc.kill()
+        if self.proc is None:
+            return
+        self._append("\n[stopping…]\n", "#d29922")
+        # A worker (e.g. the full sweep) spawns its own children; killing only
+        # the direct child would orphan them. Kill the whole tree on Windows.
+        pid = int(self.proc.processId() or 0)
+        if pid and sys.platform.startswith("win"):
+            os.system(f"taskkill /T /F /PID {pid} >nul 2>&1")
+        self.proc.kill()
 
     def _on_output(self):
         if self.proc is None:
@@ -477,19 +531,42 @@ class MainWindow(QMainWindow):
             self._found(m.group(1))
 
     def _found(self, key):
+        self.found_key = True          # keep the SOLVED status through _release
         self.found.setText(f"🎉  KEY FOUND:  {key}\nSaved to FOUND_KEY.txt — verify before broadcasting.")
         self.found.setVisible(True)
         self._set(self.stat_status, "SOLVED", "#3fb950")
 
-    def _on_finished(self, code, _s):
+    def _on_error(self, err):
+        """A worker failed to start/crashed at the process level.
+
+        Qt does NOT emit finished() for a failed start, so without this the UI
+        would lock up permanently. Report it and release the UI.
+        """
+        if self.proc is None:
+            return
+        msg = {QProcess.FailedToStart: "worker failed to start (binary/module not found?)",
+               QProcess.Crashed: "worker crashed",
+               QProcess.Timedout: "worker timed out",
+               QProcess.WriteError: "write error", QProcess.ReadError: "read error"
+               }.get(err, f"process error ({err})")
+        self._append(f"\n[ERROR] {msg}\n", "#f85149")
+        # FailedToStart never yields finished(); for the rest finished() may
+        # still arrive, and _release() is idempotent.
+        if err == QProcess.FailedToStart:
+            self._release(f"error: {msg}", ok=False)
+
+    def _release(self, status_text, ok):
+        """Return the UI to idle. Safe to call more than once."""
         self.timer.stop()
-        ok = code == 0
-        self._set(self.stat_status, "done" if ok else f"exit {code}", "#3fb950" if ok else "#f85149")
-        self._append(f"\n[finished, exit {code}]\n", "#6e7681")
+        if not self.found_key:
+            self._set(self.stat_status, status_text, "#3fb950" if ok else "#f85149")
         if self.logfile:
-            self.logfile.close(); self.logfile = None
+            try:
+                self.logfile.close()
+            except Exception:
+                pass
+            self.logfile = None
         self.proc = None
-        # restore the active button and re-enable everything
         if self.active_btn is not None:
             self.active_btn.setText(self.active_btn._run_text)
             self.active_btn.setObjectName(self.active_btn._run_obj)
@@ -497,7 +574,14 @@ class MainWindow(QMainWindow):
             self.active_btn = None
         for b in self.run_buttons:
             b.setEnabled(True)
+        self.stop_bar.setVisible(False)
         self._refresh_data_status(); self._refresh_reports_list()
+
+    def _on_finished(self, code, _s):
+        if self.proc is None:
+            return
+        self._append(f"\n[finished, exit {code}]\n", "#6e7681")
+        self._release("done" if code == 0 else f"exit {code}", ok=(code == 0))
 
     def _tick(self):
         if self.t0:
@@ -519,9 +603,11 @@ class MainWindow(QMainWindow):
 
     def _refresh_data_status(self):
         def mark(ok): return "✅" if ok else "❌"
-        known = os.path.exists(os.path.join(ROOT, "known_keys.json"))
+        # reference data ships with the code; the status cache is written at runtime
+        known = os.path.exists(os.path.join(CODE_ROOT, "known_keys.json"))
         status = os.path.exists(os.path.join(ROOT, "puzzle_status_cache.json"))
-        nrep = len([d for d in os.listdir(REPORTS)]) if os.path.isdir(REPORTS) else 0
+        nrep = len([d for d in os.listdir(REPORTS)
+                    if os.path.isdir(os.path.join(REPORTS, d))]) if os.path.isdir(REPORTS) else 0
         self.data_status.setText(
             f"{mark(known)}  Puzzle reference data (known_keys.json)\n"
             f"{mark(status)}  Live puzzle-status cache\n"
@@ -545,10 +631,15 @@ class MainWindow(QMainWindow):
             return
         r = QMessageBox.question(
             self, "First launch — research everything?",
-            "No analysis data found yet.\n\nRun the full first-time research now? "
-            "It runs every offline & on-chain analysis across all 150 puzzles and "
-            "writes the results to reports/ (offline parts are quick; on-chain needs internet).",
-            QMessageBox.Yes | QMessageBox.No)
+            "No analysis data found yet.\n\n"
+            "Run the full first-time research now?\n"
+            "It sweeps every offline & on-chain analysis across all 150 puzzles "
+            "and writes the results to the reports/ folder.\n\n"
+            "⚠ This takes a long time (tens of minutes) and only one task can run "
+            "at a time, so other buttons stay disabled until it finishes. You can "
+            "stop it any time with the Stop button.\n\n"
+            "You can also skip this and run individual tools instead.",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
         if r == QMessageBox.Yes:
             self.nav.setCurrentRow(0)
             self._toggle(self.btn_research)

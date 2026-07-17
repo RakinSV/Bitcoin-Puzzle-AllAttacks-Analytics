@@ -30,6 +30,14 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, ROOT)
 PY = sys.executable
 
+# Where reports go / what the workers use as cwd. In a frozen build ROOT points
+# inside the bundle (_internal), which is NOT where a user would ever look, so
+# write next to the executable instead.
+if getattr(sys, "frozen", False):
+    DATA_ROOT = os.path.dirname(os.path.abspath(sys.executable))
+else:
+    DATA_ROOT = ROOT
+
 from utils.puzzle_registry import all_puzzle_numbers
 
 ALL_PUZZLES = sorted(all_puzzle_numbers())
@@ -60,7 +68,7 @@ def run(cmd, timeout=600):
         # regardless of the Windows console code page (cp1251).
         env = dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUTF8="1")
         p = subprocess.run(
-            _resolve(cmd), cwd=ROOT, capture_output=True, timeout=timeout, env=env,
+            _resolve(cmd), cwd=DATA_ROOT, capture_output=True, timeout=timeout, env=env,
         )
         raw = p.stdout + p.stderr
         try:
@@ -123,7 +131,7 @@ def main():
         except (ValueError, IndexError):
             pass
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    outdir = os.path.join(ROOT, "reports", stamp)
+    outdir = os.path.join(DATA_ROOT, "reports", stamp)
     os.makedirs(outdir, exist_ok=True)
 
     print(f"Bitcoin Puzzle — full analysis sweep over {len(puzzles)} puzzles")

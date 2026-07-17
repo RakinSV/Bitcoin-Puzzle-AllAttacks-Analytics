@@ -482,8 +482,12 @@ class KangarooEngine:
         # and that costs (2^dp_bits / 4) * hops_per_call extra total hops.
         # Without this term, max_hops is often smaller than the detection overhead,
         # causing the solver to give up before the collision is ever reported.
-        _n_dp_per_call  = STEPS_CALL // 512        # = N_BATCHES = 4
-        _dp_detect_hops = ((1 << self.dp_bits) // _n_dp_per_call) * hops_per_call
+        # A kangaroo can only be sampled for a DP at a batch boundary, so it
+        # records one every STEPS_BATCH * 2^dp_bits hops; detecting a collision
+        # costs about that much for every kangaroo in the herd.
+        # (This used a hardcoded STEPS_CALL // 512 — stale since STEPS_BATCH
+        #  changed — which understated the cost by 4x.)
+        _dp_detect_hops = self.n_total * STEPS_BATCH * (1 << self.dp_bits)
         if max_iter == 0:
             # 5× safety on (collision + detection) – P(fail) ≈ e^{-5} ≈ 0.7 %
             max_hops = max((expected + _dp_detect_hops) * 5, hops_per_call * 200)
@@ -541,31 +545,54 @@ class KangarooEngine:
             print(f"\n[Kangaroo] Not found in {total_hops:,} hops.")
         return None
 
+    def _herd_affine(self, kind: str, dist: int) -> tuple | None:
+        """A kangaroo's discrete log expressed as (a, b) meaning a*k + b (mod N).
+
+        Verified against the GPU state: position == (start + dist)*G exactly, and
+        dist is pre-loaded with the per-kangaroo offset at init.
+            tame : starts at tame_base  ->  0*k + (tame_base + dist)
+            wild : starts at  Q =  k*G  ->  1*k + dist
+            neg  : starts at -Q = -k*G  -> -1*k + dist
+        """
+        if kind == 'tame':
+            return 0, (self._tame_base + dist) % N
+        if kind == 'wild':
+            return 1, dist % N
+        if kind == 'neg':
+            return N - 1, dist % N          # -1 mod N
+        return None
+
     def _try_recover(self, hit: dict, col: tuple, dp: DPTable) -> int | None:
-        """Try to recover k from a tame/wild collision."""
-        other_dist, other_kind = col
-        this_dist = hit['dist']
-        this_kind = _kind_str(hit['kind'])
+        """Recover k from an x-coordinate collision between two kangaroos.
 
-        tame_dist = other_dist if other_kind == 'tame' else this_dist
-        wild_dist = this_dist  if other_kind == 'tame' else other_dist
-        wild_kind = this_kind  if other_kind == 'tame' else other_kind
+        A DP records only the x-coordinate, and x is shared by both P and -P, so a
+        match means the two discrete logs are equal *up to sign*:
 
-        if wild_kind == 'wild':
-            # k = tame_start + tame_dist - wild_dist
-            k = (self._tame_base + tame_dist - wild_dist) % N
-        elif wild_kind == 'neg':
-            # neg wild starts at (N-k)*G
-            # k_neg = tame_start + tame_dist - neg_dist => N-k = k_neg
-            k_neg = (self._tame_base + tame_dist - wild_dist) % N
-            k = (N - k_neg) % N
-        else:
+            a1*k + b1  ==  s * (a2*k + b2)     for s = +1 or -1
+
+        which solves to k = (s*b2 - b1) / (a1 - s*a2) mod N. Every candidate is
+        then verified against the real pubkey, so a wrong branch costs nothing.
+
+        The previous code tried a single formula per herd pair (and dropped
+        wild/neg pairs entirely), so genuine collisions produced garbage keys —
+        the herds met, the key was never reported, and the search ran forever.
+        """
+        from ecc.curve import scalar_mul as _mul, G as _G
+
+        h1 = self._herd_affine(_kind_str(hit['kind']), hit['dist'])
+        h2 = self._herd_affine(col[1], col[0])
+        if h1 is None or h2 is None:
             return None
+        a1, b1 = h1
+        a2, b2 = h2
 
-        # Verify
-        if self.k_start <= k <= self.k_end:
-            from ecc.curve import scalar_mul, G as _G
-            if scalar_mul(k, _G) == self.pubkey:
+        for s in (1, N - 1):                     # the +P / -P ambiguity
+            A = (a1 - s * a2) % N
+            B = (s * b2 - b1) % N
+            if A == 0:
+                continue                          # no information from this pair
+            k = (B * pow(A, -1, N)) % N
+            if self.k_start <= k <= self.k_end and _mul(k, _G) == self.pubkey:
                 return k
         return None
 

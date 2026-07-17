@@ -126,7 +126,8 @@ def _pure_random_search(address: str, k_start: int, k_end: int,
                         threads: int = 64, blocks: int = 1024,
                         points_per_thread: int = 8,
                         jump_every: int = 200,
-                        pool_end: int = 0) -> int | None:
+                        pool_end: int = 0,
+                        checkpoint_file: str = 'checkpoint.json') -> int | None:
     """
     TRUE random lottery mode.
 
@@ -143,9 +144,15 @@ def _pure_random_search(address: str, k_start: int, k_end: int,
     target_words = get_target_for_kernel(address)
     engine.set_target(target_words)
 
+    # Cumulative lottery stats survive restarts: a random search has no resume
+    # point, but the work done is still worth recording.
+    chk = Checkpoint(checkpoint_file)
+    prior_keys, prior_windows, prior_elapsed = chk.load_lottery_totals()
+
     total_keys = 0
     t_global   = time.time()
     t_step     = time.time()
+    t_save     = time.time()
     jump_num   = 0
 
     # Pool avoidance: skip region already scanned by btcpuzzle.info pool
@@ -154,6 +161,18 @@ def _pure_random_search(address: str, k_start: int, k_end: int,
     rand_hi = k_end - engine.total_points
 
     pool_pct = (pool_end - k_start) / (k_end - k_start) * 100 if pool_end > k_start else 0
+
+    def _save_stats(spd: float = 0.0):
+        """Persist cumulative work (adds this session onto any prior totals)."""
+        try:
+            chk.save_lottery_stats(
+                address, k_start, k_end,
+                prior_keys + total_keys,
+                prior_windows + jump_num,
+                prior_elapsed + (time.time() - t_global),
+                spd)
+        except Exception:
+            pass        # a stats write must never kill the search
 
     print(f"\n{'='*60}")
     print(f"Bitcoin Puzzle Solver — PURE RANDOM MODE")
@@ -186,6 +205,7 @@ def _pure_random_search(address: str, k_start: int, k_end: int,
                         # Если комп зависнет сразу после — файл уже на диске.
                         _save_found_key(k, address)
                         # ─────────────────────────────────────────────────────
+                        _save_stats()
                         print(f"\n{'!'*60}")
                         print(f"  KEY FOUND: {hex(k)}")
                         print(f"  Decimal:   {k}")
@@ -207,11 +227,19 @@ def _pure_random_search(address: str, k_start: int, k_end: int,
                           end='', flush=True)
                     t_step = time.time()
 
+                    if time.time() - t_save >= 10.0:   # record work every ~10s
+                        _save_stats(speed)
+                        t_save = time.time()
+
     except KeyboardInterrupt:
         total_elapsed = time.time() - t_global
         speed = total_keys / total_elapsed / 1e6 if total_elapsed > 0 else 0
+        _save_stats(speed)
         print(f"\n[PureRandom] Stopped. Keys checked: {total_keys:,}  "
               f"Speed: {speed:.1f} Mkeys/s  Jumps: {jump_num:,}")
+        print(f"[PureRandom] Cumulative across runs: "
+              f"{(prior_keys + total_keys)/1e12:.4f}T keys, "
+              f"{prior_windows + jump_num:,} windows  -> {checkpoint_file}")
         return None
 
 
@@ -239,7 +267,8 @@ def gpu_search(address: str, k_start: int, k_end: int,
     if pure_random:
         return _pure_random_search(
             address, k_start, k_end, device_idx,
-            threads, blocks, points_per_thread, jump_every, pool_end)
+            threads, blocks, points_per_thread, jump_every, pool_end,
+            checkpoint_file)
 
     cov = CoverageMap(coverage_file, k_start, k_end)
     chk = Checkpoint(checkpoint_file)

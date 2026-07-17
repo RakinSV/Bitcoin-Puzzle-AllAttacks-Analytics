@@ -31,6 +31,41 @@ class Checkpoint:
         tmp.write_text(json.dumps(data, indent=2))
         tmp.replace(self.path)
 
+    def save_lottery_stats(self, address: str, k_start: int, k_end: int,
+                           keys_total: int, windows: int, elapsed: float,
+                           speed: float = 0.0):
+        """Record cumulative work for pure-random lottery mode.
+
+        Random sampling has no resume point and no linear progress, so storing
+        `k_current`/`progress_pct` (as save() does) would be meaningless here.
+        We record what was actually done instead, so the totals survive restarts.
+        """
+        data = {
+            'mode':             'pure-random',
+            'address':          address,
+            'range_start':      hex(k_start),
+            'range_end':        hex(k_end),
+            'keys_searched':    keys_total,
+            'windows':          windows,
+            'elapsed_sec':      round(elapsed, 1),
+            'speed_mkeys_sec':  round(speed, 2),
+            'saved_at':         time.strftime('%Y-%m-%d %H:%M:%S'),
+        }
+        tmp = self.path.with_suffix('.tmp')
+        tmp.write_text(json.dumps(data, indent=2))
+        tmp.replace(self.path)
+
+    def load_lottery_totals(self) -> tuple:
+        """Prior (keys_searched, windows, elapsed_sec) so totals accumulate."""
+        d = self.load()
+        if not d or d.get('mode') != 'pure-random':
+            return 0, 0, 0.0
+        try:
+            return (int(d.get('keys_searched', 0)), int(d.get('windows', 0)),
+                    float(d.get('elapsed_sec', 0.0)))
+        except Exception:
+            return 0, 0, 0.0
+
     def load(self) -> dict | None:
         if not self.path.exists():
             return None

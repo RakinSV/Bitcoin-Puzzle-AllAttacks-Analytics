@@ -875,10 +875,11 @@ def main():
                         help='Delete checkpoint and start fresh')
     parser.add_argument('--pubkey',   type=str, default='',
                         help='Target public key hex (33 or 65 bytes) for --mode kangaroo')
-    parser.add_argument('--n-tame',   type=int, default=8192,
-                        help='Tame kangaroos count (default: 8192)')
-    parser.add_argument('--n-wild',   type=int, default=8192,
-                        help='Wild kangaroos count (default: 8192)')
+    parser.add_argument('--n-tame',   type=int, default=512,
+                        help='Tame kangaroos count (default: 512; larger = slower '
+                             'CPU init for little gain — see kangaroo_engine.py)')
+    parser.add_argument('--n-wild',   type=int, default=512,
+                        help='Wild kangaroos count (default: 512)')
     parser.add_argument('--dp-bits',         type=int, default=0,
                         help='Distinguished point filter bits. Default 0 = pick '
                              'automatically from the range so DP detection does '

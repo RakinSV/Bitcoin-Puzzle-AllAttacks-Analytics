@@ -6,7 +6,9 @@
  *   1. Jacobian mixed addition: 11 muls/hop  (was 258 = 1 inversion + 3 muls)
  *   2. Inversion only every STEPS_BATCH hops (deferred affine conversion)
  *   3. Jump table cached in __local memory (32 KB LDS on RDNA2)
- *   4. STEPS_PER_CALL = STEPS_BATCH * N_BATCHES = 2048 * 1 = 2048
+ *   4. STEPS_PER_CALL = STEPS_BATCH * N_BATCHES = 32 * 64 = 2048
+ *      (STEPS_BATCH kept small so DP is sampled often enough to DETECT a
+ *       collision — a large batch makes detection ~1/STEPS_BATCH likely)
  *   5. secp256k1 mulModP ported from BitCrack (proven correct)
  *   6. #pragma unroll on all 8-wide field loops
  *
@@ -311,8 +313,8 @@ static void jacToAffine(uint ax[8], uint ay[8],
    ==================================================================== */
 
 #define W_SIZE       32     /* jump table entries                     */
-#define STEPS_BATCH  2048   /* Jacobian hops before affine conversion  */
-#define N_BATCHES    1      /* batches per kernel call -> 2048 hops    */
+#define STEPS_BATCH  32   /* Jacobian hops before affine conversion  */
+#define N_BATCHES    64      /* batches per kernel call -> 2048 hops    */
 #define KIND_TAME    0
 #define KIND_WILD    1
 #define KIND_NEG     2
@@ -473,12 +475,13 @@ __kernel void initKangaroos(
     __constant uint *tame_base_y,
     __constant uint *qx,
     __constant uint *qy,
-    __constant uint *step_x,
-    __constant uint *step_y,
+    __global uint  *step_x,          /* per-kangaroo offset point (tid-indexed) */
+    __global uint  *step_y,
     __global uint  *px,
     __global uint  *py,
     __global ulong *dist,
-    __global int   *kind)
+    __global int   *kind,
+    __global ulong *idist)           /* per-kangaroo initial distance = offset */
 {
     int tid   = get_global_id(0);
     int total = n_tame + n_wild * 2;
@@ -508,11 +511,10 @@ __kernel void initKangaroos(
         kk = KIND_TAME;
 
     } else if (tid < n_tame + n_wild) {
-        /* Wild: Q + (tw+1)*G */
-        int   tw   = tid - n_tame;
+        /* Wild: Q + off*G  (off = this kangaroo's own random offset) */
         uint  sx[8], sy[8];
         #pragma unroll 8
-        for (int i = 0; i < 8; i++) { sx[i]=step_x[tw*8+i]; sy[i]=step_y[tw*8+i]; }
+        for (int i = 0; i < 8; i++) { sx[i]=step_x[tid*8+i]; sy[i]=step_y[tid*8+i]; }
         uint  qxl[8], qyl[8];
         #pragma unroll 8
         for (int i = 0; i < 8; i++) { qxl[i]=qx[i]; qyl[i]=qy[i]; }
@@ -525,11 +527,10 @@ __kernel void initKangaroos(
         kk = KIND_WILD;
 
     } else {
-        /* Neg wild: -Q + (tn+1)*G  (-Q: same x, y -> P-y) */
-        int   tn   = tid - n_tame - n_wild;
+        /* Neg wild: -Q + off*G  (-Q: same x, y -> P-y) */
         uint  sx[8], sy[8];
         #pragma unroll 8
-        for (int i = 0; i < 8; i++) { sx[i]=step_x[tn*8+i]; sy[i]=step_y[tn*8+i]; }
+        for (int i = 0; i < 8; i++) { sx[i]=step_x[tid*8+i]; sy[i]=step_y[tid*8+i]; }
         uint  nqx[8], nqy[8];
         #pragma unroll 8
         for (int i = 0; i < 8; i++) nqx[i] = qx[i];
@@ -554,18 +555,9 @@ __kernel void initKangaroos(
         px[tid*8 + i] = rx[i];
         py[tid*8 + i] = ry[i];
     }
-    /* Initial distance = offset from each kangaroo's conceptual origin:
-         tame   : offset from tame_base * G  ->  dist = tid + 1
-         wild   : offset from pubkey (k*G)   ->  dist = tw + 1  (NOT tid+1!)
-         neg    : offset from -pubkey         ->  dist = tn + 1
-       Using tid+1 for wild/neg would corrupt key recovery by +n_tame offset. */
-    ulong init_dist;
-    if (tid < n_tame)
-        init_dist = (ulong)(tid + 1);
-    else if (tid < n_tame + n_wild)
-        init_dist = (ulong)(tid - n_tame + 1);
-    else
-        init_dist = (ulong)(tid - n_tame - n_wild + 1);
-    dist[tid] = init_dist;
+    /* Initial distance = this kangaroo's own offset from its origin (tame_base,
+       +Q or -Q). The offset POINT in step_x[tid] and this scalar idist[tid] are
+       built together on the host, so position == (origin + idist)*G exactly. */
+    dist[tid] = idist[tid];
     kind[tid] = kk;
 }

@@ -28,7 +28,7 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from ecc.curve   import scalar_mul, point_add, point_neg, G, N, INF
+from ecc.curve   import scalar_mul, point_add, point_double, point_neg, G, N, INF
 from ecc.glv     import scalar_mul_glv   # 1.5-1.7x faster scalar mul
 from utils.dp_table import DPTable
 
@@ -36,15 +36,21 @@ _HERE   = Path(__file__).parent
 _KERNEL = _HERE / 'gpu_kangaroo.cl'
 
 # ---- GPU configuration ----
-N_TAME      = 8192     # tame kangaroos
-N_WILD      = 8192     # wild kangaroos (+ same for neg)
+# The herds are spread randomly across the interval (see initialize()), which
+# gives ~10*sqrt(W) work — bounded, verified on a 40->45->50 bit ladder. A modest
+# herd is the sweet spot: init builds one offset point per kangaroo on the CPU,
+# so a large herd costs a slow init for no faster solve. 512 gives ~1s init.
+N_TAME      = 512      # tame kangaroos
+N_WILD      = 512      # wild kangaroos (+ same for neg)
 W_SIZE      = 32       # jump table size
 # Kernel geometry — MUST mirror gpu_kangaroo.cl.
-# A kangaroo's affine x-coordinate only exists after the deferred inversion at a
-# batch boundary, so DP sampling happens N_BATCHES times per call per kangaroo —
-# NOT once per hop. Everything about DP density follows from that.
-STEPS_BATCH = 2048     # hops between affine conversions (= DP sampling points)
-N_BATCHES   = 1        # batches per kernel call
+# A kangaroo's affine x only exists after the deferred inversion at a batch
+# boundary, so DP is sampled every STEPS_BATCH hops, not every hop. A large
+# STEPS_BATCH (e.g. 2048) made a genuine collision detectable only ~1/STEPS_BATCH
+# of the time (phase-alignment) so the solver never reported. 32 keeps DP
+# sampling frequent enough to detect collisions while amortising the inversion.
+STEPS_BATCH = 32       # hops between affine conversions (= DP sampling points)
+N_BATCHES   = 64       # batches per kernel call  (STEPS_CALL = 2048)
 STEPS_CALL  = STEPS_BATCH * N_BATCHES   # hops per kernel call
 DP_BITS     = 0        # 0 = auto-pick from the range (see _auto_dp_bits)
 MAX_DP_OUT  = 4096     # max DP results per kernel call
@@ -238,30 +244,52 @@ class KangarooEngine:
     # ------------------------------------------------------------------
 
     def initialize(self):
-        """Set starting positions for all kangaroos."""
-        print("[KangarooGPU] Initializing kangaroos...")
-        rng_size   = self.k_end - self.k_start + 1
-        tame_base  = self.k_start + rng_size // 2  # tame starts at midpoint
+        """Random-spread initialisation.
 
-        # Compute tame_base * G
+        Each kangaroo gets an INDEPENDENT random offset across the interval:
+            tame[tid] = k_start + off ,  wild = Q + off ,  neg = -Q + off
+        so the herds are scattered over the whole range. Validated in the herd
+        model (tests/_herd_model.py): random spread gives BOUNDED ~10*sqrt(W)
+        work, while the old clustered/uniform layout did not scale past ~40 bits.
+        Each kangaroo's initial distance is exactly its offset, so the
+        reconstruction invariant position == (origin + dist)*G still holds.
+        """
+        import random
+        print("[KangarooGPU] Initializing kangaroos (random spread)...")
+        rng_size  = self.k_end - self.k_start + 1
+        tame_base = self.k_start
+        self._tame_base = tame_base
+
         tb_pt = scalar_mul(tame_base, G)
-        tb_x  = _int_to_u256(tb_pt[0])
-        tb_y  = _int_to_u256(tb_pt[1])
+        tb_x  = _int_to_u256(tb_pt[0]); tb_y = _int_to_u256(tb_pt[1])
+        qx = _int_to_u256(self.pubkey[0]); qy = _int_to_u256(self.pubkey[1])
 
-        # Target pubkey
-        qx = _int_to_u256(self.pubkey[0])
-        qy = _int_to_u256(self.pubkey[1])
+        # Precompute 2^j*G, then build each off*G by summing its set bits — much
+        # cheaper than n_total independent scalar multiplications.
+        nbits = rng_size.bit_length()
+        pow2 = [G]
+        for _ in range(1, nbits):
+            pow2.append(point_double(pow2[-1]))
 
-        # Per-thread offset points: 0*G, 1*G, ..., max(n)*G
-        max_n = max(self.n_tame, self.n_wild)
-        print(f"[KangarooGPU] Building {max_n} offset points...")
-        step_x = np.zeros(max_n * 8, dtype=np.uint32)
-        step_y = np.zeros(max_n * 8, dtype=np.uint32)
-        pt = INF
-        for i in range(max_n):
-            pt = point_add(pt, G) if pt != INF else G
-            step_x[i*8:(i+1)*8] = _int_to_u256(pt[0])
-            step_y[i*8:(i+1)*8] = _int_to_u256(pt[1])
+        def off_point(off):
+            R = INF; j = 0
+            while off:
+                if off & 1:
+                    R = pow2[j] if R == INF else point_add(R, pow2[j])
+                off >>= 1; j += 1
+            return R
+
+        n = self.n_total
+        print(f"[KangarooGPU] Building {n} random offset points...")
+        step_x = np.zeros(n * 8, dtype=np.uint32)
+        step_y = np.zeros(n * 8, dtype=np.uint32)
+        idist  = np.zeros(n, dtype=np.uint64)
+        for tid in range(n):
+            off = random.randrange(1, rng_size)      # >=1: never the identity
+            p = off_point(off)
+            step_x[tid*8:(tid+1)*8] = _int_to_u256(p[0])
+            step_y[tid*8:(tid+1)*8] = _int_to_u256(p[1])
+            idist[tid] = off
 
         mf = cl.mem_flags
         tb_x_buf  = cl.Buffer(self.ctx, mf.READ_ONLY|mf.COPY_HOST_PTR, hostbuf=tb_x)
@@ -270,17 +298,18 @@ class KangarooEngine:
         qy_buf    = cl.Buffer(self.ctx, mf.READ_ONLY|mf.COPY_HOST_PTR, hostbuf=qy)
         sx_buf    = cl.Buffer(self.ctx, mf.READ_ONLY|mf.COPY_HOST_PTR, hostbuf=step_x)
         sy_buf    = cl.Buffer(self.ctx, mf.READ_ONLY|mf.COPY_HOST_PTR, hostbuf=step_y)
+        id_buf    = cl.Buffer(self.ctx, mf.READ_ONLY|mf.COPY_HOST_PTR, hostbuf=idist)
 
         self._kern_init.set_args(
             np.int32(self.n_tame), np.int32(self.n_wild),
             tb_x_buf, tb_y_buf, qx_buf, qy_buf,
             sx_buf, sy_buf,
-            self.px_buf, self.py_buf, self.dist_buf, self.kind_buf
+            self.px_buf, self.py_buf, self.dist_buf, self.kind_buf,
+            id_buf
         )
         cl.enqueue_nd_range_kernel(self.queue, self._kern_init,
                                    (self.n_total,), None)
         self.queue.finish()
-        self._tame_base  = tame_base
         self._iteration  = 0
         print(f"[KangarooGPU] Initialized. tame_base={hex(tame_base)}")
 
@@ -471,7 +500,15 @@ class KangarooEngine:
                 print(f"[KangarooGPU] tame_dp_file not found: {tame_dp_file} — ignoring")
 
         rng_size      = self.k_end - self.k_start + 1
-        expected      = int(2.5 * (rng_size ** 0.5))
+        # Random-spread herd typically solves in ~100*sqrt(W) hops here (the
+        # deferred-inversion DP phase factor inflates the textbook 2*sqrt(W)),
+        # but it is a Las Vegas algorithm with a heavy tail — unlucky runs were
+        # measured out past 600*sqrt(W). Budget at ~300*sqrt(W) (x5 below =
+        # ~1500*sqrt(W) of headroom) so a correct pubkey reliably solves; a
+        # single long run beats restarting, since DPs accumulate.
+        # (The old 2.5*sqrt(W) made the solver give up before the collision —
+        #  the real cause of "stalls above 40 bits".)
+        expected      = int(300 * (rng_size ** 0.5))
         total_hops    = 0
         hops_per_call = self.n_total * STEPS_CALL
         # max_hops must cover both the collision-finding phase AND the DP-detection

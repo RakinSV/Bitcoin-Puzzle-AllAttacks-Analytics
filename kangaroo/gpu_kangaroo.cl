@@ -471,28 +471,53 @@ void kangarooStep(
 __kernel void initKangaroos(
     int             n_tame,
     int             n_wild,
+    int             nbits,           /* # of 2^j*G entries in p2x/p2y            */
     __constant uint *tame_base_x,
     __constant uint *tame_base_y,
     __constant uint *qx,
     __constant uint *qy,
-    __global uint  *step_x,          /* per-kangaroo offset point (tid-indexed) */
-    __global uint  *step_y,
+    __constant uint *p2x,            /* table of (2^j * G).x  for j = 0..nbits-1 */
+    __constant uint *p2y,            /* table of (2^j * G).y                     */
     __global uint  *px,
     __global uint  *py,
     __global ulong *dist,
     __global int   *kind,
-    __global ulong *idist)           /* per-kangaroo initial distance = offset */
+    __global ulong *idist)           /* per-kangaroo random offset (also = dist) */
 {
     int tid   = get_global_id(0);
     int total = n_tame + n_wild * 2;
     if (tid >= total) return;
 
-    uint ox[8], oy[8];   /* per-thread offset = (tid+1)*G */
-    #pragma unroll 8
-    for (int i = 0; i < 8; i++) {
-        ox[i] = step_x[tid*8 + i];
-        oy[i] = step_y[tid*8 + i];
+    /* Compute this kangaroo's offset point ox/oy = off*G on the GPU by summing
+       2^j*G over the set bits of off. Avoids n_total host scalar-muls, so a big
+       herd initialises fast. (Incomplete addition: the rare edge where the
+       running sum equals +/- a table entry yields a wrong point for that one
+       kangaroo — harmless, its bad DPs fail the pubkey verification.) */
+    ulong off = idist[tid];
+    uint  ax[8], ay[8], az[8];
+    bool  have = false;
+    for (int j = 0; j < nbits; j++) {
+        if ((off >> j) & 1UL) {
+            uint tx[8], ty[8];
+            #pragma unroll 8
+            for (int i = 0; i < 8; i++) { tx[i] = p2x[j*8+i]; ty[i] = p2y[j*8+i]; }
+            if (!have) {
+                #pragma unroll 8
+                for (int i = 0; i < 8; i++) { ax[i]=tx[i]; ay[i]=ty[i]; az[i]=0; }
+                az[7] = 1;               /* Jacobian Z = 1 */
+                have = true;
+            } else {
+                /* pointAddMixed writes rz from Z1 immediately, so it cannot run
+                   in-place — accumulate through a temp. */
+                uint nx[8], ny[8], nz[8];
+                pointAddMixed(nx, ny, nz, ax, ay, az, tx, ty);
+                #pragma unroll 8
+                for (int i = 0; i < 8; i++) { ax[i]=nx[i]; ay[i]=ny[i]; az[i]=nz[i]; }
+            }
+        }
     }
+    uint ox[8], oy[8];
+    jacToAffine(ox, oy, ax, ay, az);     /* ox/oy = off*G in affine */
 
     uint rx[8], ry[8], rz[8];
     int  kk;
@@ -511,10 +536,10 @@ __kernel void initKangaroos(
         kk = KIND_TAME;
 
     } else if (tid < n_tame + n_wild) {
-        /* Wild: Q + off*G  (off = this kangaroo's own random offset) */
+        /* Wild: Q + off*G  (off*G computed above into ox/oy) */
         uint  sx[8], sy[8];
         #pragma unroll 8
-        for (int i = 0; i < 8; i++) { sx[i]=step_x[tid*8+i]; sy[i]=step_y[tid*8+i]; }
+        for (int i = 0; i < 8; i++) { sx[i]=ox[i]; sy[i]=oy[i]; }
         uint  qxl[8], qyl[8];
         #pragma unroll 8
         for (int i = 0; i < 8; i++) { qxl[i]=qx[i]; qyl[i]=qy[i]; }
@@ -530,7 +555,7 @@ __kernel void initKangaroos(
         /* Neg wild: -Q + off*G  (-Q: same x, y -> P-y) */
         uint  sx[8], sy[8];
         #pragma unroll 8
-        for (int i = 0; i < 8; i++) { sx[i]=step_x[tid*8+i]; sy[i]=step_y[tid*8+i]; }
+        for (int i = 0; i < 8; i++) { sx[i]=ox[i]; sy[i]=oy[i]; }
         uint  nqx[8], nqy[8];
         #pragma unroll 8
         for (int i = 0; i < 8; i++) nqx[i] = qx[i];

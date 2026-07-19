@@ -36,12 +36,14 @@ _HERE   = Path(__file__).parent
 _KERNEL = _HERE / 'gpu_kangaroo.cl'
 
 # ---- GPU configuration ----
-# The herds are spread randomly across the interval (see initialize()), which
-# gives ~10*sqrt(W) work — bounded, verified on a 40->45->50 bit ladder. A modest
-# herd is the sweet spot: init builds one offset point per kangaroo on the CPU,
-# so a large herd costs a slow init for no faster solve. 512 gives ~1s init.
-N_TAME      = 512      # tame kangaroos
-N_WILD      = 512      # wild kangaroos (+ same for neg)
+# The herds are spread randomly across the interval (see initialize()), giving
+# bounded ~10*sqrt(W) work (verified on a 40->58 bit ladder). Offset points are
+# computed ON THE GPU (off*G by summing 2^j*G over set bits), so a large herd
+# still initialises in ~0.1s — and a large herd both saturates the GPU (much
+# higher hop-rate) and cuts run-to-run variance. Measured: #50 10s, #55 70s,
+# #58 ~5min on one RX 6600.
+N_TAME      = 8192     # tame kangaroos
+N_WILD      = 8192     # wild kangaroos (+ same for neg)
 W_SIZE      = 32       # jump table size
 # Kernel geometry — MUST mirror gpu_kangaroo.cl.
 # A kangaroo's affine x only exists after the deferred inversion at a batch
@@ -264,46 +266,38 @@ class KangarooEngine:
         tb_x  = _int_to_u256(tb_pt[0]); tb_y = _int_to_u256(tb_pt[1])
         qx = _int_to_u256(self.pubkey[0]); qy = _int_to_u256(self.pubkey[1])
 
-        # Precompute 2^j*G, then build each off*G by summing its set bits — much
-        # cheaper than n_total independent scalar multiplications.
+        # Precompute the 2^j*G table on the host (just nbits doublings). The GPU
+        # then builds each kangaroo's off*G by summing table entries over off's
+        # set bits — so init is O(nbits) on the host regardless of herd size,
+        # and a large herd no longer means a slow init.
         nbits = rng_size.bit_length()
-        pow2 = [G]
-        for _ in range(1, nbits):
-            pow2.append(point_double(pow2[-1]))
+        p2x = np.zeros(nbits * 8, dtype=np.uint32)
+        p2y = np.zeros(nbits * 8, dtype=np.uint32)
+        pt = G
+        for j in range(nbits):
+            p2x[j*8:(j+1)*8] = _int_to_u256(pt[0])
+            p2y[j*8:(j+1)*8] = _int_to_u256(pt[1])
+            pt = point_double(pt)
 
-        def off_point(off):
-            R = INF; j = 0
-            while off:
-                if off & 1:
-                    R = pow2[j] if R == INF else point_add(R, pow2[j])
-                off >>= 1; j += 1
-            return R
-
+        # Per-kangaroo random offsets (fast — no EC math on the host).
         n = self.n_total
-        print(f"[KangarooGPU] Building {n} random offset points...")
-        step_x = np.zeros(n * 8, dtype=np.uint32)
-        step_y = np.zeros(n * 8, dtype=np.uint32)
-        idist  = np.zeros(n, dtype=np.uint64)
-        for tid in range(n):
-            off = random.randrange(1, rng_size)      # >=1: never the identity
-            p = off_point(off)
-            step_x[tid*8:(tid+1)*8] = _int_to_u256(p[0])
-            step_y[tid*8:(tid+1)*8] = _int_to_u256(p[1])
-            idist[tid] = off
+        print(f"[KangarooGPU] Random offsets for {n} kangaroos (GPU-side off*G)...")
+        idist = np.array([random.randrange(1, rng_size) for _ in range(n)],
+                         dtype=np.uint64)
 
         mf = cl.mem_flags
         tb_x_buf  = cl.Buffer(self.ctx, mf.READ_ONLY|mf.COPY_HOST_PTR, hostbuf=tb_x)
         tb_y_buf  = cl.Buffer(self.ctx, mf.READ_ONLY|mf.COPY_HOST_PTR, hostbuf=tb_y)
         qx_buf    = cl.Buffer(self.ctx, mf.READ_ONLY|mf.COPY_HOST_PTR, hostbuf=qx)
         qy_buf    = cl.Buffer(self.ctx, mf.READ_ONLY|mf.COPY_HOST_PTR, hostbuf=qy)
-        sx_buf    = cl.Buffer(self.ctx, mf.READ_ONLY|mf.COPY_HOST_PTR, hostbuf=step_x)
-        sy_buf    = cl.Buffer(self.ctx, mf.READ_ONLY|mf.COPY_HOST_PTR, hostbuf=step_y)
+        p2x_buf   = cl.Buffer(self.ctx, mf.READ_ONLY|mf.COPY_HOST_PTR, hostbuf=p2x)
+        p2y_buf   = cl.Buffer(self.ctx, mf.READ_ONLY|mf.COPY_HOST_PTR, hostbuf=p2y)
         id_buf    = cl.Buffer(self.ctx, mf.READ_ONLY|mf.COPY_HOST_PTR, hostbuf=idist)
 
         self._kern_init.set_args(
-            np.int32(self.n_tame), np.int32(self.n_wild),
+            np.int32(self.n_tame), np.int32(self.n_wild), np.int32(nbits),
             tb_x_buf, tb_y_buf, qx_buf, qy_buf,
-            sx_buf, sy_buf,
+            p2x_buf, p2y_buf,
             self.px_buf, self.py_buf, self.dist_buf, self.kind_buf,
             id_buf
         )

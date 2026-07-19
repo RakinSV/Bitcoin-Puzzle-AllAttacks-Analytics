@@ -67,11 +67,10 @@ The discrete-log-in-an-interval problem: given `Q = k·G` with `k ∈ [a, b]`, r
 
 Measured: **~631 Mhop/s sustained on an AMD RX 6600** (raw hop throughput).
 
-> ### ✅ Solves mid-size puzzles (verified) · ⚠️ not yet tuned for high bits
-> Verified end-to-end against real public keys on one RX 6600:
-> **#30 (~4s), #38 (~5s), #42 (~17s), #45 (~16s), #50 (~43s)** — all recovered
-> correctly. Everything at or below ~50 bits solves; the old engine stalled above
-> ~40 bits and is now fixed.
+> ### ✅ Solves to ~58 bits on one RX 6600 (verified end-to-end)
+> Recovered against real public keys:
+> **#42 ~17s · #45 ~4s · #50 ~10s · #55 ~70s · #58 ~5 min.** The old engine
+> stalled above ~40 bits; it now scales cleanly to ~58.
 >
 > Two root causes were found and fixed (see [issue #1](https://github.com/RakinSV/Bitcoin-Puzzle-AllAttacks-Analytics/issues/1)):
 > 1. **Key reconstruction.** A distinguished point stores only the x-coordinate
@@ -83,12 +82,14 @@ Measured: **~631 Mhop/s sustained on an AMD RX 6600** (raw hop throughput).
 >    randomly** across the interval — validated in a from-scratch herd model to give
 >    bounded ~`10·√W` work, the design JeanLucPons uses.
 >
-> **Not yet done (performance, high bits):** the herd is currently small (512), so
-> the GPU is underused (~25 Mhop/s) and there's high run-to-run variance. Lifting
-> both — **GPU-side offset init** (compute `off·G` on the GPU → large herd, fast
-> init) and **Montgomery batch inversion** (per-hop, phase-independent DP) — is the
-> path to ~60 bits. A 71-bit key is **not** solvable on one consumer GPU regardless
-> (that needs a distinguished-point pool across many machines); any earlier
+> Offset points are now built **on the GPU** (`off·G` by summing a `2^j·G` table
+> over set bits), so init stays ~0.1s even for the default 8192-kangaroo herd —
+> which saturates the GPU and cuts variance.
+>
+> **Further speed (optional):** **Montgomery batch inversion** across the herd
+> (per-hop, phase-independent DP) would raise the hop-rate and push a few bits
+> higher. A 71-bit key is **not** solvable on one consumer GPU regardless — that
+> needs a distinguished-point pool across many machines; any earlier
 > "2–3 minutes" claim was hop-rate extrapolation, never verified.
 
 ### A hand-written OpenCL secp256k1 kernel (`kangaroo/gpu_kangaroo.cl`)

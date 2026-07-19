@@ -67,25 +67,29 @@ The discrete-log-in-an-interval problem: given `Q = k·G` with `k ∈ [a, b]`, r
 
 Measured: **~631 Mhop/s sustained on an AMD RX 6600** (raw hop throughput).
 
-> ### ⚠️ Known issue — the engine does not converge above ~40 bits
-> Verified by solving real puzzles with their public keys: **#30, #37 and #40 are
-> recovered correctly** (#40 in ~20s), but **#45, #50 and #60 are not**.
+> ### ✅ Solves mid-size puzzles (verified) · ⚠️ not yet tuned for high bits
+> Verified end-to-end against real public keys on one RX 6600:
+> **#30 (~4s), #38 (~5s), #42 (~17s), #45 (~16s), #50 (~43s)** — all recovered
+> correctly. Everything at or below ~50 bits solves; the old engine stalled above
+> ~40 bits and is now fixed.
 >
-> A root cause was found and fixed: the herds *were* colliding, but because a
-> distinguished point stores only the x-coordinate — shared by `P` and `-P` — the
-> host applied one reconstruction formula per herd pair and turned real collisions
-> into garbage keys (a 256-bit "key" for a 40-bit puzzle). That is fixed, and #40
-> went from never solving to solving in seconds. See
-> [issue #1](https://github.com/RakinSV/Bitcoin-Puzzle-AllAttacks-Analytics/issues/1).
+> Two root causes were found and fixed (see [issue #1](https://github.com/RakinSV/Bitcoin-Puzzle-AllAttacks-Analytics/issues/1)):
+> 1. **Key reconstruction.** A distinguished point stores only the x-coordinate
+>    (shared by `P` and `-P`), so a collision means the discrete logs agree *up to
+>    sign*; the host applied one formula per herd pair and produced garbage keys.
+>    Now modelled as `a·k + b` with the ± ambiguity resolved.
+> 2. **Herd geometry.** Both herds started *clustered* at two points, giving no
+>    √-parallelism (work grew as `n_total·√W`). Now both herds are **spread
+>    randomly** across the interval — validated in a from-scratch herd model to give
+>    bounded ~`10·√W` work, the design JeanLucPons uses.
 >
-> The remaining suspect for #45+: DP sampling happens at each kangaroo's own batch
-> boundary, so two kangaroos that merge onto the same trail only record the same
-> point if their step phases agree (~1/STEPS_BATCH). The proper fix is Montgomery
-> batch inversion across the herd, so the DP test becomes a property of the point
-> rather than of a step counter.
->
-> Any earlier claim here that a 71-bit key "falls in 2–3 minutes" was extrapolated
-> from hop rate and **never verified end-to-end**. It is not currently true.
+> **Not yet done (performance, high bits):** the herd is currently small (512), so
+> the GPU is underused (~25 Mhop/s) and there's high run-to-run variance. Lifting
+> both — **GPU-side offset init** (compute `off·G` on the GPU → large herd, fast
+> init) and **Montgomery batch inversion** (per-hop, phase-independent DP) — is the
+> path to ~60 bits. A 71-bit key is **not** solvable on one consumer GPU regardless
+> (that needs a distinguished-point pool across many machines); any earlier
+> "2–3 minutes" claim was hop-rate extrapolation, never verified.
 
 ### A hand-written OpenCL secp256k1 kernel (`kangaroo/gpu_kangaroo.cl`)
 This is the centerpiece. 256-bit modular arithmetic, written for GPUs that have no native big-int support:

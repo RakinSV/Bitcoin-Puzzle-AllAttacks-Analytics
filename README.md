@@ -68,29 +68,34 @@ The discrete-log-in-an-interval problem: given `Q = k·G` with `k ∈ [a, b]`, r
 Measured: **~631 Mhop/s sustained on an AMD RX 6600** (raw hop throughput).
 
 > ### ✅ Solves to ~58 bits on one RX 6600 (verified end-to-end)
-> Recovered against real public keys:
-> **#42 ~17s · #45 ~4s · #50 ~10s · #55 ~70s · #58 ~5 min.** The old engine
+> Recovered against real public keys with the per-hop-DP kernel (v1.0.5):
+> **#45 ~3s · #50 ~4s · #52 ~13s · #55 ~40s · #58 ~44s.** The old engine
 > stalled above ~40 bits; it now scales cleanly to ~58.
 >
-> Two root causes were found and fixed (see [issue #1](https://github.com/RakinSV/Bitcoin-Puzzle-AllAttacks-Analytics/issues/1)):
+> Root causes found and fixed (see [issue #1](https://github.com/RakinSV/Bitcoin-Puzzle-AllAttacks-Analytics/issues/1)):
 > 1. **Key reconstruction.** A distinguished point stores only the x-coordinate
 >    (shared by `P` and `-P`), so a collision means the discrete logs agree *up to
 >    sign*; the host applied one formula per herd pair and produced garbage keys.
 >    Now modelled as `a·k + b` with the ± ambiguity resolved.
 > 2. **Herd geometry.** Both herds started *clustered* at two points, giving no
->    √-parallelism (work grew as `n_total·√W`). Now both herds are **spread
->    randomly** across the interval — validated in a from-scratch herd model to give
->    bounded ~`10·√W` work, the design JeanLucPons uses.
+>    √-parallelism. Now both herds are **spread randomly** across the interval.
+> 3. **Jump-distance coset bug.** For odd-numbered puzzles `sqrt(W)` is a power of
+>    two, so every jump `mean*(2j+1)/32` shared a large common factor (gcd **2²⁹**
+>    at #71). Kangaroos were trapped on the coset `start mod g`, so herds almost
+>    never collided — the search ran ~`g`× too long. A per-index perturbation
+>    forces gcd = 1 (**#55 501s → 34s**).
 >
-> Offset points are now built **on the GPU** (`off·G` by summing a `2^j·G` table
-> over set bits), so init stays ~0.1s even for the default 8192-kangaroo herd —
-> which saturates the GPU and cuts variance.
+> **Per-hop distinguished points (`kangarooStepMB`).** Instead of deferring the
+> field inversion over 32 hops (a DP only at batch boundaries — ~20× more hops), the
+> kernel batch-inverts the Z-coords of `K=16` kangaroos in one shared inversion
+> (Montgomery), giving an affine x — and a DP test — every hop. Net **~4× faster**
+> than the deferred kernel despite a lower raw hop-rate.
 >
-> **Further speed (optional):** **Montgomery batch inversion** across the herd
-> (per-hop, phase-independent DP) would raise the hop-rate and push a few bits
-> higher. A 71-bit key is **not** solvable on one consumer GPU regardless — that
-> needs a distinguished-point pool across many machines; any earlier
-> "2–3 minutes" claim was hop-rate extrapolation, never verified.
+> **Still not enough for #71.** A 71-bit key needs a **distinguished-point pool
+> across many machines** — one GPU cannot do ~2³⁵ hops in reasonable time. #60+
+> shows heavy Las-Vegas tails; closing the MB kernel's rate gap (an SoA memory
+> layout) is future work. Any earlier "2–3 minutes" claim was hop-rate
+> extrapolation, never verified.
 
 ### A hand-written OpenCL secp256k1 kernel (`kangaroo/gpu_kangaroo.cl`)
 This is the centerpiece. 256-bit modular arithmetic, written for GPUs that have no native big-int support:

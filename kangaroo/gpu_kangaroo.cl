@@ -456,6 +456,142 @@ void kangarooStep(
 
 
 /* ====================================================================
+   Montgomery batch-inversion step kernel (per-hop DP)
+   ====================================================================
+
+   The plain kangarooStep defers the inversion over STEPS_BATCH hops, so an
+   affine x (needed for the DP test) only exists at batch boundaries. A model
+   sweep (tests/_herd_detect.py) showed that boundary-only sampling costs ~20x
+   more hops than per-hop DP: (steps_batch=32,dp=9)=289*sqrtW vs (1,9)=14*sqrtW.
+
+   This kernel gives PER-HOP DP by batch-inverting all K_BATCH Z-coordinates a
+   work-item owns in one shared inversion (Montgomery's trick): cost per hop is
+   ~ (11 point-add + 256/K inversion-share + 5 overhead) muls/kangaroo, i.e. the
+   inversion is amortised down to a few muls/hop while STILL producing an affine
+   x every hop. Because we now have the affine x each hop, the jump index is
+   taken from the AFFINE x (invariant under the Jacobian representation), so two
+   kangaroos that land on the same point merge and share a DP — the proper
+   kangaroo dynamics the batched kernel could only approximate at boundaries.
+
+   State (persistent across calls, all n_total*8 uint unless noted):
+     px,py : Jacobian X,Y      (seeded affine, Z=1; kept Jacobian thereafter)
+     pz    : Jacobian Z
+     axb   : current affine x   (drives jump index + DP test)
+     pref  : Montgomery prefix-product scratch
+   Work size = n_total / K_BATCH work-items; requires n_total % K_BATCH == 0. */
+
+#ifndef K_BATCH
+#define K_BATCH 8
+#endif
+
+__kernel void kangarooStepMB(
+    int             n_workitems,     /* = n_total / K_BATCH                    */
+    int             n_total,
+    __global uint  *px,              /* Jacobian X                             */
+    __global uint  *py,              /* Jacobian Y                             */
+    __global uint  *pz,              /* Jacobian Z                             */
+    __global uint  *axb,            /* current affine x (index + DP)          */
+    __global uint  *pref,            /* prefix-product scratch                 */
+    __global ulong *dist,
+    __global int   *kind,
+    __constant uint  *jx,
+    __constant uint  *jy,
+    __constant ulong *jdist,
+    int             steps,           /* per-hop-DP hops this call              */
+    uint            dp_mask_lo,
+    int             max_dp,          /* dp_results capacity (own buffer)       */
+    __global DPResult      *dp_results,
+    __global volatile int  *n_results)
+{
+    int wid = get_global_id(0);
+
+    /* Cache jump table in LDS (shared by the work-group). All threads must reach
+       the barrier, so guard the WORK below rather than early-returning here (an
+       early return before the barrier would deadlock any padded work-group). */
+    __local uint ljx[W_SIZE * 8];
+    __local uint ljy[W_SIZE * 8];
+    __local ulong ljd[W_SIZE];
+    {
+        int lid = get_local_id(0);
+        int lsz = get_local_size(0);
+        for (int k = lid; k < W_SIZE * 8; k += lsz) { ljx[k] = jx[k]; ljy[k] = jy[k]; }
+        for (int k = lid; k < W_SIZE; k += lsz) ljd[k] = jdist[k];
+    }
+    barrier(CLK_LOCAL_MEM_FENCE);
+
+    if (wid >= n_workitems) return;
+    int base = wid * K_BATCH;
+
+    for (int hop = 0; hop < steps; hop++) {
+
+        /* ---- Phase A: advance each kangaroo one hop; build prefix products ---- */
+        uint p[8] = {0,0,0,0,0,0,0,1};          /* running product = 1 */
+        for (int k = 0; k < K_BATCH; k++) {
+            int gi = base + k;
+            /* jump index from the INVARIANT affine x (low bits) */
+            uint id = axb[gi*8 + 7] & (W_SIZE - 1u);
+            uint jxl[8], jyl[8];
+            #pragma unroll 8
+            for (int i = 0; i < 8; i++) { jxl[i] = ljx[id*8+i]; jyl[i] = ljy[id*8+i]; }
+
+            uint Jx[8], Jy[8], Jz[8];
+            #pragma unroll 8
+            for (int i = 0; i < 8; i++) { Jx[i]=px[gi*8+i]; Jy[i]=py[gi*8+i]; Jz[i]=pz[gi*8+i]; }
+
+            uint Rx[8], Ry[8], Rz[8];
+            pointAddMixed(Rx, Ry, Rz, Jx, Jy, Jz, jxl, jyl);
+            #pragma unroll 8
+            for (int i = 0; i < 8; i++) { px[gi*8+i]=Rx[i]; py[gi*8+i]=Ry[i]; pz[gi*8+i]=Rz[i]; }
+
+            /* prefix[k] = product of Z_0..Z_{k-1}; then fold in Z_k */
+            #pragma unroll 8
+            for (int i = 0; i < 8; i++) pref[gi*8+i] = p[i];
+            uint np[8]; mulModP(np, p, Rz);
+            #pragma unroll 8
+            for (int i = 0; i < 8; i++) p[i] = np[i];
+
+            dist[gi] += ljd[id];
+        }
+
+        /* ---- One shared inversion of the whole product ---- */
+        uint pinv[8];
+        invModP(pinv, p);
+
+        /* ---- Phase B (reverse): recover each 1/Z, affine x, DP test ---- */
+        for (int k = K_BATCH - 1; k >= 0; k--) {
+            int gi = base + k;
+            uint Rz[8], prefk[8], Xk[8];
+            #pragma unroll 8
+            for (int i = 0; i < 8; i++) { Rz[i]=pz[gi*8+i]; prefk[i]=pref[gi*8+i]; Xk[i]=px[gi*8+i]; }
+
+            uint zinv[8];
+            mulModP(zinv, pinv, prefk);             /* zinv = 1/Z_k */
+            uint np[8]; mulModP(np, pinv, Rz);      /* pinv *= Z_k for next */
+            #pragma unroll 8
+            for (int i = 0; i < 8; i++) pinv[i] = np[i];
+
+            uint zinv2[8], xa[8];
+            sqrModP(zinv2, zinv);                   /* 1/Z^2 */
+            mulModP(xa, Xk, zinv2);                 /* affine x = X/Z^2 */
+            #pragma unroll 8
+            for (int i = 0; i < 8; i++) axb[gi*8+i] = xa[i];
+
+            if ((xa[7] & dp_mask_lo) == 0) {
+                int slot = atomic_add(n_results, 1);
+                if (slot < max_dp) {
+                    #pragma unroll 8
+                    for (int i = 0; i < 8; i++) dp_results[slot].x[i] = xa[i];
+                    dp_results[slot].dist      = dist[gi];
+                    dp_results[slot].kind      = kind[gi];
+                    dp_results[slot].thread_id = gi;
+                }
+            }
+        }
+    }
+}
+
+
+/* ====================================================================
    Initialization kernel
    ==================================================================== */
 

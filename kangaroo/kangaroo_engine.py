@@ -55,7 +55,19 @@ STEPS_BATCH = 32       # hops between affine conversions (= DP sampling points)
 N_BATCHES   = 64       # batches per kernel call  (STEPS_CALL = 2048)
 STEPS_CALL  = STEPS_BATCH * N_BATCHES   # hops per kernel call
 DP_BITS     = 0        # 0 = auto-pick from the range (see _auto_dp_bits)
-MAX_DP_OUT  = 4096     # max DP results per kernel call
+MAX_DP_OUT  = 4096     # max DP results per kernel call (deferred-inversion path)
+
+# ---- Montgomery batch-inversion path (per-hop DP) ----
+# The deferred-inversion kernel can only sample a DP every STEPS_BATCH hops, which
+# a model sweep (tests/_herd_detect.py) showed costs ~20x more hops than per-hop
+# DP: (steps_batch=32,dp=9)=289*sqrtW vs (1,9)=14*sqrtW. kangarooStepMB gives a
+# per-hop affine x by batch-inverting the K_BATCH Z-coords a work-item owns in one
+# shared inversion (Montgomery), recovering most of that 20x. Per-hop DP is ~32x
+# denser, so it uses a larger DP buffer and fewer hops per kernel call.
+USE_MB     = True      # use the per-hop batch-inversion kernel by default
+K_BATCH    = 16        # kangaroos per work-item (passed to the kernel as -DK_BATCH)
+MB_N_TAME  = 16384     # MB likes a larger herd for occupancy (n_wi = 3*n/K)
+MAX_DP_MB  = 65536     # DP buffer capacity for the per-hop path
 
 
 def _auto_dp_bits(n_total: int, rng_size: int) -> int:
@@ -117,7 +129,14 @@ class KangarooEngine:
                  k_start: int, k_end: int,
                  device_idx: int = 0,
                  n_tame: int = N_TAME, n_wild: int = N_WILD,
-                 dp_bits: int = DP_BITS):
+                 dp_bits: int = DP_BITS,
+                 use_mb: bool = USE_MB, k_batch: int = K_BATCH):
+        # The per-hop batch-inversion path is happier with a larger herd (more
+        # work-items to hide the per-hop global-memory latency). Bump the DEFAULT
+        # herd for MB; an explicit n_tame/n_wild from the caller is respected.
+        if use_mb and n_tame == N_TAME and n_wild == N_WILD:
+            n_tame = n_wild = MB_N_TAME
+
         self.pubkey   = pubkey
         self.k_start  = k_start
         self.k_end    = k_end
@@ -126,25 +145,53 @@ class KangarooEngine:
         self.n_total  = n_tame + n_wild * 2   # tame + wild + neg
 
         # dp_bits=0 (the default) means "pick a good one for this range".
-        if not dp_bits:
-            dp_bits = _auto_dp_bits(self.n_total, k_end - k_start + 1)
-            print(f"[KangarooGPU] dp_bits auto-selected: {dp_bits} "
-                  f"(DP every ~{STEPS_BATCH * (1 << dp_bits):,} hops/kangaroo)")
+        # The MB path recomputes dp_bits below (per-hop DP has no STEPS_BATCH
+        # factor), so skip the deferred-path auto/floor logic and its prints then.
+        if not use_mb:
+            if not dp_bits:
+                dp_bits = _auto_dp_bits(self.n_total, k_end - k_start + 1)
+                print(f"[KangarooGPU] dp_bits auto-selected: {dp_bits} "
+                      f"(DP every ~{STEPS_BATCH * (1 << dp_bits):,} hops/kangaroo)")
 
-        # Guard the GPU output buffer. DPs are emitted only at batch boundaries,
-        # so a call produces at most n_total * N_BATCHES / 2^dp_bits of them.
-        # (The old constraint used STEPS_CALL here, as if every hop were sampled.
-        # That demanded ~11 bits more than necessary, made DPs ~2000x too sparse
-        # and let post-collision detection dominate the whole solve.)
-        import math as _math
-        _min_dp = max(1, _math.ceil(_math.log2(
-            max(1, self.n_total * N_BATCHES / MAX_DP_OUT))))
-        if dp_bits < _min_dp:
-            print(f"[KangarooGPU] dp_bits={dp_bits} too small for "
-                  f"n_total={self.n_total} — auto-adjusted to {_min_dp}")
-            dp_bits = _min_dp
+            # Guard the GPU output buffer. DPs are emitted only at batch boundaries,
+            # so a call produces at most n_total * N_BATCHES / 2^dp_bits of them.
+            import math as _math
+            _min_dp = max(1, _math.ceil(_math.log2(
+                max(1, self.n_total * N_BATCHES / MAX_DP_OUT))))
+            if dp_bits < _min_dp:
+                print(f"[KangarooGPU] dp_bits={dp_bits} too small for "
+                      f"n_total={self.n_total} — auto-adjusted to {_min_dp}")
+                dp_bits = _min_dp
         self.dp_bits  = dp_bits
         self.dp_mask  = (1 << dp_bits) - 1   # lower dp_bits mask
+
+        # ---- Montgomery batch-inversion (per-hop DP) path ----
+        self._use_mb   = use_mb
+        self._k_batch  = k_batch
+        if use_mb:
+            if self.n_total % k_batch != 0:
+                raise ValueError(f"n_total={self.n_total} must be a multiple of "
+                                 f"k_batch={k_batch} for the batch-inversion path")
+            n_wi = self.n_total // k_batch
+            if n_wi % 64 != 0:
+                raise ValueError(f"n_total//k_batch={n_wi} must be a multiple of 64 "
+                                 f"(work-group size); adjust n_tame/n_wild")
+            import math as _m2
+            rng = k_end - k_start + 1
+            self._dp_capacity = MAX_DP_MB
+            # per-hop DP: no STEPS_BATCH penalty, so aim ~n_total DPs before the
+            # collision  ->  2^dp ~ sqrt(W)/n_total.
+            mb_dp = max(1, int(round((rng.bit_length() - 1) / 2
+                                     - _m2.log2(max(2, self.n_total)))))
+            self.dp_bits = mb_dp
+            self.dp_mask = (1 << mb_dp) - 1
+            # size hops/call so a call emits ~ capacity/4 DPs (comfortable overflow
+            # margin), and cap it so per-call latency and granularity stay sane at
+            # high bits (large 2^dp would otherwise make one call enormous).
+            self._mb_steps = max(1, min(2048, int(self._dp_capacity * (1 << mb_dp)
+                                        / max(1, self.n_total) / 4)))
+        else:
+            self._dp_capacity = MAX_DP_OUT
 
         # OpenCL setup
         platforms = cl.get_platforms()
@@ -158,8 +205,12 @@ class KangarooEngine:
         print(f"[KangarooGPU] {self.device.name}")
         print(f"[KangarooGPU] n_tame={n_tame}  n_wild={n_wild}  "
               f"n_neg={n_wild}  total={self.n_total}")
-        print(f"[KangarooGPU] dp_bits={dp_bits}  W={W_SIZE}  "
-              f"steps/call={STEPS_CALL}")
+        if self._use_mb:
+            print(f"[KangarooGPU] mode=MB (per-hop DP)  dp_bits={self.dp_bits}  "
+                  f"W={W_SIZE}  K_BATCH={self._k_batch}  steps/call={self._mb_steps}")
+        else:
+            print(f"[KangarooGPU] dp_bits={dp_bits}  W={W_SIZE}  "
+                  f"steps/call={STEPS_CALL}")
 
         self._compile()
         self._build_jump_table()
@@ -171,15 +222,18 @@ class KangarooEngine:
 
     def _compile(self):
         src = _KERNEL.read_text(encoding='utf-8')
+        opts = '-cl-mad-enable -cl-fast-relaxed-math'
+        if self._use_mb:
+            opts += f' -DK_BATCH={self._k_batch}'
         try:
-            self.prog = cl.Program(self.ctx, src).build(
-                options='-cl-mad-enable -cl-fast-relaxed-math'
-            )
+            self.prog = cl.Program(self.ctx, src).build(options=opts)
         except cl.RuntimeError as e:
             print(f"[KangarooGPU] Build error: {e}")
             raise
         self._kern_step = cl.Kernel(self.prog, 'kangarooStep')
         self._kern_init = cl.Kernel(self.prog, 'initKangaroos')
+        if self._use_mb:
+            self._kern_mb = cl.Kernel(self.prog, 'kangarooStepMB')
         print("[KangarooGPU] Kernel compiled OK.")
 
     # ------------------------------------------------------------------
@@ -190,18 +244,37 @@ class KangarooEngine:
         """
         Jump distances scaled to sqrt(range)/2 — theoretically optimal for Kangaroo.
         W evenly-spaced values from mean/W to 2*mean - mean/W, mean = sqrt(range)/2.
+
+        CRITICAL: the jump distances must have gcd 1. When the interval is a power
+        of two with an even exponent (odd-numbered puzzles: #45, #55, #65, #71 ...),
+        sqrt(W) is a power of two, so mean = sqrt(W)/2 is too, and every
+        mean*(2j+1)//W_SIZE is a multiple of mean/W_SIZE. All jumps then share that
+        factor g, which confines each kangaroo to the coset (start mod g): two
+        herds can only collide if their random offsets agree mod g, which for a big
+        g almost never happens — so the search runs for ~g times too long (measured:
+        #55 took ~200*sqrt(W) instead of ~15). A tiny per-index perturbation breaks
+        the common factor without disturbing the mean or the distribution.
         """
+        import math as _math
         rng_size = self.k_end - self.k_start + 1
         mean     = max(W_SIZE, int(rng_size ** 0.5) // 2)
-        print(f"[KangarooGPU] Building jump table ({W_SIZE} points, "
-              f"mean_dist=2^{mean.bit_length()-1})...")
 
         jx = np.zeros(W_SIZE * 8, dtype=np.uint32)
         jy = np.zeros(W_SIZE * 8, dtype=np.uint32)
         jd = np.zeros(W_SIZE, dtype=np.uint64)
 
-        for j in range(W_SIZE):
-            d  = max(1, mean * (2 * j + 1) // W_SIZE)
+        # + j breaks any shared power-of-two factor: jd[0]=mean/W_SIZE (a multiple
+        # of the factor), jd[1]=3*mean/W_SIZE + 1 is coprime to it, so gcd == 1.
+        dists = [max(1, mean * (2 * j + 1) // W_SIZE) + j for j in range(W_SIZE)]
+        g = 0
+        for d in dists:
+            g = _math.gcd(g, d)
+        if g != 1:                                   # belt-and-braces (never seen)
+            dists[0] += 1
+        print(f"[KangarooGPU] Building jump table ({W_SIZE} points, "
+              f"mean_dist=2^{mean.bit_length()-1}, gcd={g})...")
+
+        for j, d in enumerate(dists):
             pt = scalar_mul(d, G)        # GLV neutral in Python; gains only in OCL kernel
             jx[j*8:(j+1)*8] = _int_to_u256(pt[0])
             jy[j*8:(j+1)*8] = _int_to_u256(pt[1])
@@ -233,12 +306,23 @@ class KangarooEngine:
         self.jd_buf   = cl.Buffer(self.ctx, mf.READ_ONLY | mf.COPY_HOST_PTR,
                                    hostbuf=self.jd_host)
 
-        # DP results
-        dp_size = MAX_DP_OUT * (8*4 + 8 + 4 + 4)   # x[8]+dist+kind+tid
+        # DP results (capacity depends on path)
+        dp_size = self._dp_capacity * (8*4 + 8 + 4 + 4)   # x[8]+dist+kind+tid
         self.dp_buf  = cl.Buffer(self.ctx, mf.WRITE_ONLY, dp_size)
         self.cnt_buf = cl.Buffer(self.ctx, mf.READ_WRITE, 4)  # int n_results
 
-        mb = (N * 8 * 4 * 2 + N * 8 + N * 4 + W_SIZE * 8 * 4 * 2 + dp_size) / 1024 / 1024
+        # Per-hop batch-inversion path keeps the herd in Jacobian across calls and
+        # needs three extra N*8 buffers: Jacobian Z, current affine x, and the
+        # Montgomery prefix-product scratch.
+        extra = 0
+        if self._use_mb:
+            self.pz_buf   = cl.Buffer(self.ctx, mf.READ_WRITE, N * 8 * 4)
+            self.ax_buf   = cl.Buffer(self.ctx, mf.READ_WRITE, N * 8 * 4)
+            self.pref_buf = cl.Buffer(self.ctx, mf.READ_WRITE, N * 8 * 4)
+            extra = N * 8 * 4 * 3
+
+        mb = (N * 8 * 4 * 2 + N * 8 + N * 4 + W_SIZE * 8 * 4 * 2
+              + dp_size + extra) / 1024 / 1024
         print(f"[KangarooGPU] VRAM allocated: {mb:.1f} MB")
 
     # ------------------------------------------------------------------
@@ -304,6 +388,17 @@ class KangarooEngine:
         cl.enqueue_nd_range_kernel(self.queue, self._kern_init,
                                    (self.n_total,), None)
         self.queue.finish()
+
+        # Seed the per-hop batch-inversion state: the herd is affine now (Z=1), and
+        # the affine-x buffer (jump index + DP) starts equal to px. The herd then
+        # stays in Jacobian across MB calls.
+        if self._use_mb:
+            jz_one = np.zeros(self.n_total * 8, dtype=np.uint32)
+            jz_one[7::8] = 1                       # Z = 1 (big-endian word 7)
+            cl.enqueue_copy(self.queue, self.pz_buf, jz_one)
+            cl.enqueue_copy(self.queue, self.ax_buf, self.px_buf)  # device-to-device
+            self.queue.finish()
+
         self._iteration  = 0
         print(f"[KangarooGPU] Initialized. tame_base={hex(tame_base)}")
 
@@ -313,25 +408,47 @@ class KangarooEngine:
 
     def step(self) -> list:
         """
-        Run STEPS_CALL hops for all kangaroos.
+        Run one kernel call of hops for all kangaroos.
         Returns list of DPResult dicts for any DP hits.
         """
         # Reset DP counter
         zero = np.zeros(1, dtype=np.int32)
         cl.enqueue_copy(self.queue, self.cnt_buf, zero)
 
-        self._kern_step.set_args(
-            np.int32(self.n_total),
-            self.px_buf, self.py_buf, self.dist_buf, self.kind_buf,
-            self.jx_buf, self.jy_buf, self.jd_buf,
-            np.uint32(self.dp_mask & 0xFFFFFFFF),
-            self.dp_buf, self.cnt_buf
-        )
-        cl.enqueue_nd_range_kernel(self.queue, self._kern_step,
-                                   (self.n_total,), None)
+        if self._use_mb:
+            n_wi = self.n_total // self._k_batch
+            self._kern_mb.set_args(
+                np.int32(n_wi), np.int32(self.n_total),
+                self.px_buf, self.py_buf, self.pz_buf,
+                self.ax_buf, self.pref_buf,
+                self.dist_buf, self.kind_buf,
+                self.jx_buf, self.jy_buf, self.jd_buf,
+                np.int32(self._mb_steps),
+                np.uint32(self.dp_mask & 0xFFFFFFFF),
+                np.int32(self._dp_capacity),
+                self.dp_buf, self.cnt_buf
+            )
+            cl.enqueue_nd_range_kernel(self.queue, self._kern_mb,
+                                       (n_wi,), (64,))
+        else:
+            self._kern_step.set_args(
+                np.int32(self.n_total),
+                self.px_buf, self.py_buf, self.dist_buf, self.kind_buf,
+                self.jx_buf, self.jy_buf, self.jd_buf,
+                np.uint32(self.dp_mask & 0xFFFFFFFF),
+                self.dp_buf, self.cnt_buf
+            )
+            cl.enqueue_nd_range_kernel(self.queue, self._kern_step,
+                                       (self.n_total,), None)
         self.queue.finish()
         self._iteration += 1
         return self._read_dp()
+
+    def hops_per_call(self) -> int:
+        """Total kangaroo-hops executed by one step() call."""
+        if self._use_mb:
+            return self.n_total * self._mb_steps
+        return self.n_total * STEPS_CALL
 
     # ------------------------------------------------------------------
     # Read DP results from GPU
@@ -344,7 +461,11 @@ class KangarooEngine:
         n = int(cnt_host[0])
         if n == 0:
             return []
-        n = min(n, MAX_DP_OUT)
+        if n > self._dp_capacity:
+            print(f"[KangarooGPU] WARNING: DP overflow {n} > capacity "
+                  f"{self._dp_capacity} — {n - self._dp_capacity} DPs dropped "
+                  f"(reduce steps/call)")
+        n = min(n, self._dp_capacity)
 
         # Each DPResult: x[8] uint32 + dist ulong + kind int + tid int
         # = 32 + 8 + 4 + 4 = 48 bytes
@@ -502,9 +623,11 @@ class KangarooEngine:
         # single long run beats restarting, since DPs accumulate.
         # (The old 2.5*sqrt(W) made the solver give up before the collision —
         #  the real cause of "stalls above 40 bits".)
-        expected      = int(300 * (rng_size ** 0.5))
+        # Per-hop DP (MB) removes the ~20x STEPS_BATCH detection penalty, so it
+        # solves in ~15*sqrt(W); the deferred-inversion path needs ~300*sqrt(W).
+        expected      = int((15 if self._use_mb else 300) * (rng_size ** 0.5))
         total_hops    = 0
-        hops_per_call = self.n_total * STEPS_CALL
+        hops_per_call = self.hops_per_call()
         # max_hops must cover both the collision-finding phase AND the DP-detection
         # phase that follows.  The kernel checks dp_mask every STEPS_BATCH=512 hops
         # (N_BATCHES=4 checks per kernel call), so after two kangaroos collide the
@@ -518,7 +641,12 @@ class KangarooEngine:
         # costs about that much for every kangaroo in the herd.
         # (This used a hardcoded STEPS_CALL // 512 — stale since STEPS_BATCH
         #  changed — which understated the cost by 4x.)
-        _dp_detect_hops = self.n_total * STEPS_BATCH * (1 << self.dp_bits)
+        # After two herds collide, the collision fires once both kangaroos record a
+        # DP. Per-hop DP (MB) records one every 2^dp_bits hops; the deferred path
+        # only samples at batch boundaries, so every STEPS_BATCH*2^dp_bits hops.
+        _dp_period = (1 << self.dp_bits) if self._use_mb \
+                     else STEPS_BATCH * (1 << self.dp_bits)
+        _dp_detect_hops = self.n_total * _dp_period
         if max_iter == 0:
             # 5× safety on (collision + detection) – P(fail) ≈ e^{-5} ≈ 0.7 %
             max_hops = max((expected + _dp_detect_hops) * 5, hops_per_call * 200)
@@ -548,7 +676,7 @@ class KangarooEngine:
         iteration = 0
         while total_hops < max_hops:
             dp_hits = self.step()
-            total_hops += self.n_total * STEPS_CALL
+            total_hops += hops_per_call
             iteration  += 1
 
             for hit in dp_hits:

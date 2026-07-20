@@ -91,11 +91,26 @@ Measured: **~631 Mhop/s sustained on an AMD RX 6600** (raw hop throughput).
 > (Montgomery), giving an affine x — and a DP test — every hop. Net **~4× faster**
 > than the deferred kernel despite a lower raw hop-rate.
 >
-> **Still not enough for #71.** A 71-bit key needs a **distinguished-point pool
-> across many machines** — one GPU cannot do ~2³⁵ hops in reasonable time. #60+
-> shows heavy Las-Vegas tails; closing the MB kernel's rate gap (an SoA memory
-> layout) is future work. Any earlier "2–3 minutes" claim was hop-rate
-> extrapolation, never verified.
+> **Still not enough for #71 on one box.** A 71-bit key needs a
+> **distinguished-point pool across many machines** — one GPU cannot do ~2³⁵ hops
+> in reasonable time. That pool now exists (below). #60+ shows heavy Las-Vegas
+> tails; closing the MB kernel's rate gap (an SoA memory layout) is future work.
+
+### Distributed DP pool — scaling past one GPU (`kangaroo/dp_server.py`, `dp_client.py`)
+Every worker runs its own herd on the **same** interval, jump table and DP filter,
+and streams its distinguished points to a central pool. The pool keeps one global
+DP table and reconstructs the key on the **first cross-worker collision** — because
+all workers share `tame_base` (`= k_start`) and `Q` (`= pubkey`), a tame DP from
+worker A and a wild DP from worker B reconstruct exactly as if one engine found
+both. N workers ⇒ ~N× effective herd ⇒ ~N× wall-clock. Verified end-to-end
+(`tests/test_dp_pool.py`): two GPU workers solved #40 through one shared pool.
+
+```bash
+# on the coordinator — the pubkey is what a mempool exposes when the address is spent
+python -m kangaroo.dp_server --puzzle 71 --pubkey 02abc... --dp-bits 20 --port 8899
+# on each GPU box
+python -m kangaroo.dp_client --server http://COORDINATOR:8899 --worker gpu-1
+```
 
 ### A hand-written OpenCL secp256k1 kernel (`kangaroo/gpu_kangaroo.cl`)
 This is the centerpiece. 256-bit modular arithmetic, written for GPUs that have no native big-int support:

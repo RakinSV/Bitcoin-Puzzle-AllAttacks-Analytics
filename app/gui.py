@@ -378,6 +378,16 @@ class MainWindow(QMainWindow):
                    lambda: worker_argv("analysis.nonce_attack", ["--quick"]))
         self._card(v, "Pubkey EC-point patterns", "Harvest exposed pubkeys and test for structural relations.",
                    lambda: worker_argv("analysis.pubkey_pattern", ["--collect"]))
+        self._card(v, "Creator signature attack (#125-150)",
+                   "The one math attack that ignores interval size: scans the exposed puzzles' "
+                   "real signatures for nonce reuse, cross-key r-collisions, small/biased nonces, "
+                   "and runs an LLL lattice attack. A hit would break a 14+ BTC puzzle outright.",
+                   lambda: worker_argv("analysis.creator_sig_attack"))
+        self._card(v, "Key structure hunt (offline)",
+                   "Runs 6 independent hypotheses on the 70 known keys (master-prefix, LCG, "
+                   "compressibility, bit-stats, shared low bits, gcd). Structure here would make "
+                   "#71+ derivable with no GPU. Offline — no internet needed.",
+                   lambda: worker_argv("analysis.key_structure_hunt"))
         v.addStretch(1)
         return self._scroll(inner)
 

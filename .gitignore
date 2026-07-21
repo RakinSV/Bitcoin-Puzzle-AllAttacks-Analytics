@@ -43,3 +43,4 @@ desktop.ini
 
 # Wiki staging (pushed to the .wiki repo, not the code repo)
 .wiki/
+nonce_sigs.json

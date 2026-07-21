@@ -255,6 +255,11 @@ class MainWindow(QMainWindow):
                    "Run every offline + on-chain analysis across all 150 puzzles and write "
                    "the results to reports/. Do this once to populate your data.",
                    lambda: worker_argv("run_all_analyses"), primary=True)
+        self._card(v, "What can I actually win?",
+                   "Scans every puzzle on-chain for the three things a win needs: unsolved, public "
+                   "key exposed, and interval within reach. Tells you where effort has a chance — "
+                   "and where it would be a 2^70 wall. (Details + pool sizing on the On-chain page.)",
+                   lambda: worker_argv("analysis.feasible_targets", ["--max", "160"]))
         self._card(v, "Refresh live puzzle status",
                    "Re-query the blockchain for which puzzles are still unsolved (cached up to 6h).",
                    lambda: worker_argv("analysis.puzzle_status", ["--unsolved", "--max", "150", "--refresh"]))
@@ -346,6 +351,23 @@ class MainWindow(QMainWindow):
         inner = QWidget(); v = QVBoxLayout(inner)
         note = QLabel("These query the blockchain — internet required.")
         note.setObjectName("desc"); v.addWidget(note)
+
+        ft = QHBoxLayout()
+        ft.addWidget(QLabel("GPUs in your pool"))
+        self.ft_gpus = QSpinBox(); self.ft_gpus.setRange(1, 1000000); self.ft_gpus.setValue(1)
+        ft.addWidget(self.ft_gpus)
+        self.ft_refresh = QCheckBox("Force re-query (ignore 24h cache)")
+        ft.addWidget(self.ft_refresh); ft.addStretch(1)
+        self._card(v, "Feasible targets — what can I actually win?",
+                   "Checks all three things a win requires: the puzzle is UNSOLVED, its PUBLIC KEY "
+                   "is exposed (only a spend reveals it — Kangaroo cannot start without it), and "
+                   "sqrt(interval) is within reach. ETAs are anchored on a measured solve (#58 = 44s "
+                   "on one RX 6600), and divided by your pool size.",
+                   lambda: worker_argv("analysis.feasible_targets",
+                                       ["--max", "160", "--gpus", str(self.ft_gpus.value())]
+                                       + (["--refresh"] if self.ft_refresh.isChecked() else [])),
+                   inputs=ft, primary=True)
+
         self._card(v, "Live puzzle status", "Which puzzles are still unsolved + attack priority.",
                    lambda: worker_argv("analysis.puzzle_status", ["--unsolved", "--max", "150"]))
         self._card(v, "Ghost-solved re-verification", "Re-check #75…130 on-chain for funds / exposed pubkeys.",

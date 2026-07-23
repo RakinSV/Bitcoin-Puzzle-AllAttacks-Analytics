@@ -388,6 +388,11 @@ class MainWindow(QMainWindow):
                    "compressibility, bit-stats, shared low bits, gcd). Structure here would make "
                    "#71+ derivable with no GPU. Offline — no internet needed.",
                    lambda: worker_argv("analysis.key_structure_hunt"))
+        self._card(v, "Lottery math — can brute force be beaten? (offline)",
+                   "Tests whether the known keys are uniform (KS + chi-square + per-bit bias). If "
+                   "uniform, a theorem says no search order beats random — and it prints the honest "
+                   "expected reward per GPU-year and the best target (#71). No false hope.",
+                   lambda: worker_argv("analysis.lottery_math"))
         v.addStretch(1)
         return self._scroll(inner)
 

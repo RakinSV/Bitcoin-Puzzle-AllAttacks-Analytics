@@ -53,16 +53,30 @@ PUZZLES = {n: get_puzzle(n) for n in all_puzzle_numbers()}
 
 POOL_PROGRESS = {
     # puzzle_num: (ranges_done, range_size_bits, total_ranges)
+    # Fallback only — used when the live read in analysis.pool_coverage fails
+    # (no network). A stale snapshot under-states coverage, which merely costs us
+    # some duplicated work; it can never make us skip unsearched keys.
     71: (287_884, 45, 33_554_432),   # snapshot 2026-06: 0.858% scanned
 }
 
 
 def _get_pool_end(puzzle_num: int, pz: dict) -> int:
-    """Absolute key offset up to which the btcpuzzle.info pool has scanned.
+    """Absolute key offset up to which the public pools have scanned.
 
-    Returns 0 when no pool data is known for this puzzle — callers treat that
-    as "no avoidance" via the `pool_end > k_start` guard.
+    Reads LIVE coverage first (analysis.pool_coverage, read-only: we take the
+    pools' progress and publish nothing back), because the hardcoded snapshot
+    goes stale and every stale range is keys we would re-check for nothing.
+    Falls back to the snapshot offline. Returns 0 when nothing is known —
+    callers treat that as "no avoidance" via the `pool_end > k_start` guard.
     """
+    try:
+        from analysis.pool_coverage import get_pool_end as _live
+        live = _live(puzzle_num)
+        if live and live > pz['start']:
+            return min(live, pz['end'])
+    except Exception:
+        pass                    # offline / parse change -> snapshot below
+
     info = POOL_PROGRESS.get(puzzle_num)
     if not info:
         return 0

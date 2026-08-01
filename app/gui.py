@@ -378,6 +378,15 @@ class MainWindow(QMainWindow):
                    lambda: worker_argv("analysis.nonce_attack", ["--quick"]))
         self._card(v, "Pubkey EC-point patterns", "Harvest exposed pubkeys and test for structural relations.",
                    lambda: worker_argv("analysis.pubkey_pattern", ["--collect"]))
+        self._card(v, "Pool coverage — skip what others already scanned",
+                   "Reads how much of each keyspace the public pools have already swept (they "
+                   "sweep sequentially from the start) so our random windows only draw from "
+                   "virgin territory. STRICTLY READ-ONLY: we take their progress and publish "
+                   "nothing — no registration, no reporting, none of our keys leave this machine. "
+                   "Run before launching the lottery; --pool-avoid then uses the live value.",
+                   lambda: worker_argv("analysis.pool_coverage",
+                                       ["--puzzle", "71", "--puzzle", "72",
+                                        "--puzzle", "73", "--refresh"]))
         self._card(v, "Creator signature attack (#125-150)",
                    "The one math attack that ignores interval size: scans the exposed puzzles' "
                    "real signatures for nonce reuse, cross-key r-collisions, small/biased nonces, "

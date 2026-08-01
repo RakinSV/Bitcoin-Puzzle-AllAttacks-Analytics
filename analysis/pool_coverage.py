@@ -82,27 +82,25 @@ def src_btcpuzzle_info(n: int) -> dict | None:
             'total_ranges': total}
 
 
-def src_secretscan(n: int) -> dict | None:
-    """secretscan.org publishes its own sweep progress for some puzzles."""
-    html = _get_text(f'https://secretscan.org/puzzle/{n}')
-    if not html:
-        return None
-    text = re.sub(r'<[^>]+>', ' ', html)
-    text = re.sub(r'\s+', ' ', text)
-    m = re.search(r'([\d,]+)\s*(?:scanned|checked)\s*/\s*([\d,]+)', text, re.I)
-    if not m:
-        return None
-    done = int(m.group(1).replace(',', ''))
-    total = int(m.group(2).replace(',', ''))
-    if total <= 0 or not (0 <= done <= total):
-        return None
-    return {'source': 'secretscan.org', 'ranges_done': done,
-            'total_ranges': total}
-
-
 # Sources are tried in order and the LARGEST coverage wins, so adding a pool can
 # only ever improve how much already-swept space we skip.
-SOURCES = [src_btcpuzzle_info, src_secretscan]
+#
+# Why only one: every other candidate was checked and none publishes usable
+# coverage (verified 2026-08).
+#   * secretscan.org  — no coverage data at all. It sells scanning ("Order Now")
+#                       and renders placeholder counters (Pool Speed: 0 Mk/s).
+#                       A parser here was dead code that always returned None,
+#                       which is worse than no parser: it implied multi-pool
+#                       coverage we never had.
+#   * btc-puzzle.com  — JS-only shell (~2 KB, nothing server-rendered).
+#   * privatekeys.pw  — 403 to programmatic requests.
+# btcpuzzle.info is also the only pool the coverage press refers to, as "the
+# community pool", singular.
+#
+# NOTE ON WHAT THIS CANNOT SEE: solo searchers and private farms publish nothing,
+# and anyone sweeping RANDOMLY leaves no contiguous frontier to skip even in
+# principle. So this bounds the redundancy we can avoid; it does not eliminate it.
+SOURCES = [src_btcpuzzle_info]
 
 
 def fetch_all_statuses(refresh: bool = False) -> dict:

@@ -82,7 +82,60 @@ def src_btcpuzzle_info(n: int) -> dict | None:
             'total_ranges': total}
 
 
-SOURCES = [src_btcpuzzle_info]
+def src_secretscan(n: int) -> dict | None:
+    """secretscan.org publishes its own sweep progress for some puzzles."""
+    html = _get_text(f'https://secretscan.org/puzzle/{n}')
+    if not html:
+        return None
+    text = re.sub(r'<[^>]+>', ' ', html)
+    text = re.sub(r'\s+', ' ', text)
+    m = re.search(r'([\d,]+)\s*(?:scanned|checked)\s*/\s*([\d,]+)', text, re.I)
+    if not m:
+        return None
+    done = int(m.group(1).replace(',', ''))
+    total = int(m.group(2).replace(',', ''))
+    if total <= 0 or not (0 <= done <= total):
+        return None
+    return {'source': 'secretscan.org', 'ranges_done': done,
+            'total_ranges': total}
+
+
+# Sources are tried in order and the LARGEST coverage wins, so adding a pool can
+# only ever improve how much already-swept space we skip.
+SOURCES = [src_btcpuzzle_info, src_secretscan]
+
+
+def fetch_all_statuses(refresh: bool = False) -> dict:
+    """{puzzle_n: 'solved'|'unsolved'} decided ON-CHAIN, not from a pool page.
+
+    Deliberately NOT scraped: the pool index renders its three "ongoing" puzzles
+    in a header block with no status label, so a row-regex silently attaches the
+    NEXT row's label to them — it reported #72 as solved while 7.2 BTC was
+    verifiably still sitting at its address. A prize that is still unspent is the
+    only trustworthy definition of unsolved, so we ask the blockchain: funded and
+    non-zero balance = unsolved.
+    """
+    from utils.puzzle_registry import PUZZLE_ADDRESSES, all_puzzle_numbers
+    from analysis.puzzle_status import load_cache as _pz_cache, refresh_status
+
+    cache = _pz_cache() or {}
+    if refresh or not cache:
+        try:
+            refresh_status(force=refresh)
+            cache = _pz_cache() or {}
+        except Exception:
+            pass
+
+    out = {}
+    for n in all_puzzle_numbers():
+        ent = cache.get(str(n)) or cache.get(n)
+        if not isinstance(ent, dict):
+            continue
+        funded = ent.get('funded_sat', 0)
+        bal = ent.get('balance_sat', ent.get('balance', 0))
+        if funded:
+            out[n] = 'solved' if not bal else 'unsolved'
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -171,12 +224,23 @@ def describe(n: int, refresh: bool = False) -> str:
 def main():
     ap = argparse.ArgumentParser(description="Read public pool coverage (read-only)")
     ap.add_argument('--puzzle', type=int, action='append',
-                    help="puzzle number (repeatable); default: 71..75")
+                    help="puzzle number (repeatable); default: every unsolved one")
     ap.add_argument('--refresh', action='store_true')
     ap.add_argument('--json', action='store_true')
+    ap.add_argument('--max', type=int, default=160,
+                    help="highest puzzle to consider when scanning all")
     args = ap.parse_args()
 
-    nums = args.puzzle or [71, 72, 73, 74, 75]
+    if args.puzzle:
+        nums = args.puzzle
+    else:
+        # Every UNSOLVED puzzle, straight from the pool index (one request).
+        st = fetch_all_statuses(refresh=args.refresh)
+        nums = [n for n in sorted(st) if st[n] == 'unsolved' and n <= args.max]
+        if not nums:
+            nums = [71, 72, 73]
+        print(f"  [index] {len(st)} puzzles known, "
+              f"{len(nums)} unsolved <= #{args.max}")
     if args.json:
         out = {}
         for n in nums:

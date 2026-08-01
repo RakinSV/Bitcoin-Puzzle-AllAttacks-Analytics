@@ -127,6 +127,38 @@ def test_busy_guard_does_not_start_second_process():
     w.close()
 
 
+def test_info_page_and_donation_address():
+    """The Info page must show the author's address, and it must be THE address.
+
+    The GUI, the copy button and the README each carry this string. If they ever
+    disagree, someone's donation goes to a wallet nobody controls — a silent,
+    unrecoverable failure, so pin all three to one source.
+    """
+    from PySide6.QtWidgets import QLineEdit, QPushButton
+    w = gui.MainWindow()
+    check("nav entries match pages", w.nav.count() == w.stack.count())
+
+    idx = next(i for i in range(w.nav.count())
+               if "Info" in w.nav.item(i).text())
+    w.nav.setCurrentRow(idx)
+    page = w.stack.currentWidget()
+
+    shown = [e.text() for e in page.findChildren(QLineEdit)]
+    check("donation address is displayed", gui.DONATION_BTC in shown)
+    check("address is a bech32 mainnet address",
+          gui.DONATION_BTC.startswith("bc1") and len(gui.DONATION_BTC) >= 42)
+
+    btn = next(b for b in page.findChildren(QPushButton) if "Copy" in b.text())
+    btn.click()
+    check("copy button puts the address on the clipboard",
+          QApplication.clipboard().text() == gui.DONATION_BTC)
+
+    readme = os.path.join(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__))), "README.md")
+    with open(readme, encoding="utf-8") as f:
+        check("README advertises the same address", gui.DONATION_BTC in f.read())
+
+
 if __name__ == "__main__":
     print("=" * 60)
     print("  Desktop GUI regression tests")
@@ -136,6 +168,7 @@ if __name__ == "__main__":
     test_status_listing_does_not_false_trigger()
     test_data_root_separates_from_bundle()
     test_busy_guard_does_not_start_second_process()
+    test_info_page_and_donation_address()
     print("\n" + "=" * 60)
     if FAILS:
         print(f"  {len(FAILS)} FAILED: {FAILS}")

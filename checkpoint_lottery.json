@@ -1,0 +1,11 @@
+{
+  "mode": "pure-random",
+  "address": "1PWo3JeB9jrGwfHDNpdGK54CRas7fsVzXU",
+  "range_start": "0x400000000000000000",
+  "range_end": "0x7fffffffffffffffff",
+  "keys_searched": 235292065792,
+  "windows": 5,
+  "elapsed_sec": 651.5,
+  "speed_mkeys_sec": 353.23,
+  "saved_at": "2026-08-01 15:34:35"
+}

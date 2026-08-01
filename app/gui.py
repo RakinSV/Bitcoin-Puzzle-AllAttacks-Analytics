@@ -50,6 +50,11 @@ def _data_root():
 CODE_ROOT = _code_root()
 ROOT = _data_root()                              # workers run with this as cwd
 LOGS = os.path.join(ROOT, "logs")
+
+# Author's donation address, shown on the Info page. Keep this the single source
+# of truth — the copy button reads it, so a mismatch here would silently send
+# someone's donation to the wrong place.
+DONATION_BTC = "bc1qwnkyez3nv86dry54dqfjjtav29qqq72h69pevw"
 REPORTS = os.path.join(ROOT, "reports")
 
 # ── live-output parsers ──────────────────────────────────────────────────────
@@ -135,7 +140,8 @@ class MainWindow(QMainWindow):
         self.nav = QListWidget(); self.nav.setObjectName("nav")
         self.nav.setFixedWidth(210)
         for name in ["  Dashboard", "  Solve", "  Offline analyses",
-                     "  On-chain recon", "  Live watch", "  GPU tools", "  Reports & logs"]:
+                     "  On-chain recon", "  Live watch", "  GPU tools",
+                     "  Reports & logs", "  ℹ  Info & support"]:
             QListWidgetItem(name, self.nav)
         self.nav.currentRowChanged.connect(lambda i: self.stack.setCurrentIndex(i))
         outer.addWidget(self.nav)
@@ -155,6 +161,7 @@ class MainWindow(QMainWindow):
         self.stack.addWidget(self._page_watch())
         self.stack.addWidget(self._page_gpu())
         self.stack.addWidget(self._page_reports())
+        self.stack.addWidget(self._page_info())
         # The page area must get the lion's share of the height — with no
         # stretch factor it collapsed to a cramped scrolling strip while the
         # log took everything, which made the action buttons hard to reach.
@@ -489,6 +496,92 @@ class MainWindow(QMainWindow):
         v.addWidget(self.reports_list, 1)
         self._refresh_reports_list()
         return inner
+
+    def _page_info(self):
+        inner = QWidget(); v = QVBoxLayout(inner)
+
+        about = QGroupBox("About this program"); a = QVBoxLayout(about)
+        t = QLabel(
+            "<b>Bitcoin Puzzle — All Attacks &amp; Analytics</b><br><br>"
+            "A from-scratch toolkit for the public Bitcoin Puzzle challenge: a "
+            "hand-written OpenCL <b>secp256k1</b> kernel, a GPU <b>Pollard's "
+            "Kangaroo</b> engine (verified end-to-end to ~58 bits, with a measured "
+            "K of 1.1–5.8 — matching the published state of the art at its best), "
+            "a <b>BSGS</b> solver, a <b>distributed distinguished-point pool</b>, "
+            "and a suite of cryptanalytic attacks run over all 160 puzzles.<br><br>"
+            "Every attack in here returned <b>negative</b>, and that is the honest "
+            "result: the puzzle keys are genuinely random. The value of this "
+            "project is knowing exactly where <i>not</i> to spend GPU-years — and "
+            "the engineering it took to prove it."
+        )
+        t.setWordWrap(True); t.setTextFormat(Qt.RichText); a.addWidget(t)
+        v.addWidget(about)
+
+        honest = QGroupBox("What it will and will not do"); h = QVBoxLayout(honest)
+        hl = QLabel(
+            "This is a <b>research and learning</b> tool, not a money-making plan. "
+            "The smallest unsolved puzzle (#71) has no exposed public key, so only "
+            "brute force applies — and the public pools' own telemetry projects "
+            "<b>centuries for the entire pool combined</b>. On one consumer GPU the "
+            "odds are roughly <b>1 in 90,000 per year</b>.<br><br>"
+            "Run it to learn how elliptic-curve cryptanalysis and GPU engineering "
+            "actually work. Please don't run it expecting income."
+        )
+        hl.setWordWrap(True); hl.setTextFormat(Qt.RichText)
+        hl.setObjectName("desc"); h.addWidget(hl)
+        v.addWidget(honest)
+
+        author = QGroupBox("Author"); au = QVBoxLayout(author)
+        al = QLabel(
+            "Built by <b>RakinSV</b> — engine, kernels, analyses and app.<br>"
+            "Source, issues and releases: "
+            "<a href='https://github.com/RakinSV/Bitcoin-Puzzle-AllAttacks-Analytics'>"
+            "github.com/RakinSV/Bitcoin-Puzzle-AllAttacks-Analytics</a><br>"
+            "Licensed MIT — use it, fork it, learn from it."
+        )
+        al.setWordWrap(True); al.setTextFormat(Qt.RichText)
+        al.setOpenExternalLinks(True); au.addWidget(al)
+        v.addWidget(author)
+
+        sup = QGroupBox("☕  Support the project"); s = QVBoxLayout(sup)
+        sl = QLabel(
+            "This took months of work and is given away free, with no ads, no "
+            "telemetry and no strings.<br><br>"
+            "<b>If it was useful to you — a donation would genuinely help.</b> "
+            "Any amount matters, and it keeps the project alive and maintained. "
+            "Thank you for even considering it. 🙏"
+        )
+        sl.setWordWrap(True); sl.setTextFormat(Qt.RichText); s.addWidget(sl)
+
+        addr = QLineEdit(DONATION_BTC)
+        addr.setReadOnly(True)
+        addr.setCursorPosition(0)
+        addr.setStyleSheet("font-family: Consolas, monospace; padding:6px;")
+        s.addWidget(QLabel("Bitcoin (BTC):"))
+        s.addWidget(addr)
+
+        row = QHBoxLayout()
+        copy = QPushButton("📋  Copy address")
+        copy.clicked.connect(lambda: self._copy_donation(addr))
+        self.donate_note = QLabel(""); self.donate_note.setObjectName("desc")
+        row.addWidget(copy); row.addWidget(self.donate_note); row.addStretch(1)
+        s.addLayout(row)
+
+        star = QLabel(
+            "Not able to donate? A ⭐ on GitHub, a bug report, or telling someone "
+            "about the project helps just as much."
+        )
+        star.setWordWrap(True); star.setObjectName("desc"); s.addWidget(star)
+        v.addWidget(sup)
+
+        v.addStretch(1)
+        return self._scroll(inner)
+
+    def _copy_donation(self, field):
+        QApplication.clipboard().setText(DONATION_BTC)
+        field.selectAll()
+        self.donate_note.setText("Copied — thank you! 🙏")
+        QTimer.singleShot(4000, lambda: self.donate_note.setText(""))
 
     # ====================================================================
     #  run engine

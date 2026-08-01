@@ -12,6 +12,7 @@ checkpoint.json
 coverage.json
 fingerprint_cache.json
 puzzle_status_cache.json
+feasible_targets_cache.json
 nonce_sigs.json
 *.log
 reports/
@@ -42,3 +43,5 @@ desktop.ini
 
 # Wiki staging (pushed to the .wiki repo, not the code repo)
 .wiki/
+nonce_sigs.json
+pool_coverage_cache.json

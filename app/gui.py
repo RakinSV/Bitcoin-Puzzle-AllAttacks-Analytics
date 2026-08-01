@@ -255,6 +255,11 @@ class MainWindow(QMainWindow):
                    "Run every offline + on-chain analysis across all 150 puzzles and write "
                    "the results to reports/. Do this once to populate your data.",
                    lambda: worker_argv("run_all_analyses"), primary=True)
+        self._card(v, "What can I actually win?",
+                   "Scans every puzzle on-chain for the three things a win needs: unsolved, public "
+                   "key exposed, and interval within reach. Tells you where effort has a chance — "
+                   "and where it would be a 2^70 wall. (Details + pool sizing on the On-chain page.)",
+                   lambda: worker_argv("analysis.feasible_targets", ["--max", "160"]))
         self._card(v, "Refresh live puzzle status",
                    "Re-query the blockchain for which puzzles are still unsolved (cached up to 6h).",
                    lambda: worker_argv("analysis.puzzle_status", ["--unsolved", "--max", "150", "--refresh"]))
@@ -270,7 +275,7 @@ class MainWindow(QMainWindow):
         self.s_mode.currentIndexChanged.connect(self._solve_mode_changed)
         g.addWidget(self.s_mode, 0, 1, 1, 3)
         g.addWidget(QLabel("Puzzle #"), 1, 0)
-        self.s_puzzle = QSpinBox(); self.s_puzzle.setRange(1, 150); self.s_puzzle.setValue(71)
+        self.s_puzzle = QSpinBox(); self.s_puzzle.setRange(1, 160); self.s_puzzle.setValue(71)
         g.addWidget(self.s_puzzle, 1, 1)
         self.s_pool = QCheckBox("Pool-avoid"); self.s_pool.setChecked(True)
         g.addWidget(self.s_pool, 1, 2)
@@ -346,6 +351,23 @@ class MainWindow(QMainWindow):
         inner = QWidget(); v = QVBoxLayout(inner)
         note = QLabel("These query the blockchain — internet required.")
         note.setObjectName("desc"); v.addWidget(note)
+
+        ft = QHBoxLayout()
+        ft.addWidget(QLabel("GPUs in your pool"))
+        self.ft_gpus = QSpinBox(); self.ft_gpus.setRange(1, 1000000); self.ft_gpus.setValue(1)
+        ft.addWidget(self.ft_gpus)
+        self.ft_refresh = QCheckBox("Force re-query (ignore 24h cache)")
+        ft.addWidget(self.ft_refresh); ft.addStretch(1)
+        self._card(v, "Feasible targets — what can I actually win?",
+                   "Checks all three things a win requires: the puzzle is UNSOLVED, its PUBLIC KEY "
+                   "is exposed (only a spend reveals it — Kangaroo cannot start without it), and "
+                   "sqrt(interval) is within reach. ETAs are anchored on a measured solve (#58 = 44s "
+                   "on one RX 6600), and divided by your pool size.",
+                   lambda: worker_argv("analysis.feasible_targets",
+                                       ["--max", "160", "--gpus", str(self.ft_gpus.value())]
+                                       + (["--refresh"] if self.ft_refresh.isChecked() else [])),
+                   inputs=ft, primary=True)
+
         self._card(v, "Live puzzle status", "Which puzzles are still unsolved + attack priority.",
                    lambda: worker_argv("analysis.puzzle_status", ["--unsolved", "--max", "150"]))
         self._card(v, "Ghost-solved re-verification", "Re-check #75…130 on-chain for funds / exposed pubkeys.",
@@ -356,6 +378,30 @@ class MainWindow(QMainWindow):
                    lambda: worker_argv("analysis.nonce_attack", ["--quick"]))
         self._card(v, "Pubkey EC-point patterns", "Harvest exposed pubkeys and test for structural relations.",
                    lambda: worker_argv("analysis.pubkey_pattern", ["--collect"]))
+        self._card(v, "Pool coverage — skip what others already scanned",
+                   "Reads how much of each keyspace the public pools have already swept (they "
+                   "sweep sequentially from the start) so our random windows only draw from "
+                   "virgin territory. STRICTLY READ-ONLY: we take their progress and publish "
+                   "nothing — no registration, no reporting, none of our keys leave this machine. "
+                   "Run before launching the lottery; --pool-avoid then uses the live value.",
+                   lambda: worker_argv("analysis.pool_coverage",
+                                       ["--puzzle", "71", "--puzzle", "72",
+                                        "--puzzle", "73", "--refresh"]))
+        self._card(v, "Creator signature attack (#125-150)",
+                   "The one math attack that ignores interval size: scans the exposed puzzles' "
+                   "real signatures for nonce reuse, cross-key r-collisions, small/biased nonces, "
+                   "and runs an LLL lattice attack. A hit would break a 14+ BTC puzzle outright.",
+                   lambda: worker_argv("analysis.creator_sig_attack"))
+        self._card(v, "Key structure hunt (offline)",
+                   "Runs 6 independent hypotheses on the 70 known keys (master-prefix, LCG, "
+                   "compressibility, bit-stats, shared low bits, gcd). Structure here would make "
+                   "#71+ derivable with no GPU. Offline — no internet needed.",
+                   lambda: worker_argv("analysis.key_structure_hunt"))
+        self._card(v, "Lottery math — can brute force be beaten? (offline)",
+                   "Tests whether the known keys are uniform (KS + chi-square + per-bit bias). If "
+                   "uniform, a theorem says no search order beats random — and it prints the honest "
+                   "expected reward per GPU-year and the best target (#71). No false hope.",
+                   lambda: worker_argv("analysis.lottery_math"))
         v.addStretch(1)
         return self._scroll(inner)
 

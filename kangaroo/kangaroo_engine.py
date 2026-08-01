@@ -165,6 +165,34 @@ class KangarooEngine:
         self.dp_bits  = dp_bits
         self.dp_mask  = (1 << dp_bits) - 1   # lower dp_bits mask
 
+        # ---- 64-bit walk budget ----
+        # The kernel accumulates each kangaroo's walk in a ulong. The starting
+        # offset was moved to the host (it spans the interval and overflows above
+        # #65), but the WALK itself still has to fit: a kangaroo takes roughly
+        # K*sqrt(W)/n_total hops of mean sqrt(W)/2, so the walk approaches
+        # ~2*K*W/n_total. Past 2^64 it wraps, the reconstruction then computes a
+        # b that does not match, every candidate fails verification, and the
+        # search runs forever finding nothing — a silent, indistinguishable-from-
+        # bad-luck failure. Say so instead.
+        # Jump distances live in a ulong too, and those overflow once
+        # sqrt(W)/2 >= 2^64 (around 131 bits), which is a hard stop.
+        _rng = k_end - k_start + 1
+        self._max_jump = max(W_SIZE, int(_rng ** 0.5) // 2)
+        if self._max_jump * 2 >= (1 << 64):
+            raise ValueError(
+                f"interval is {_rng.bit_length()} bits: the jump distances alone "
+                f"(~2^{(self._max_jump * 2).bit_length() - 1}) exceed the kernel's "
+                f"64-bit distance arithmetic. This engine cannot address it.")
+        _walk = 2.0 * 4.0 * _rng / max(1, self.n_total)      # K ~ 4
+        self._walk_headroom = _walk / float(1 << 64)
+        if _walk >= (1 << 64):
+            print(f"[KangarooGPU] WARNING: a {_rng.bit_length()}-bit interval "
+                  f"needs a walk of ~2^{int(_walk).bit_length()-1} per kangaroo, "
+                  f"but the kernel accumulates it in 64 bits. Distances will wrap "
+                  f"and NO key will ever be reported (verification always fails). "
+                  f"Largest safe interval at this herd: "
+                  f"~{int((1 << 64) * self.n_total / 8).bit_length()} bits.")
+
         # ---- Montgomery batch-inversion (per-hop DP) path ----
         self._use_mb   = use_mb
         self._k_batch  = k_batch

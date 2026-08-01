@@ -108,7 +108,9 @@ The headline result: **the puzzle creator used genuine cryptographic randomness.
 
 **Tool.** `analysis/ghost_solved_check.py`.
 
-**Verdict.** ⚠️ All re-checked puzzles still hold their funds, and #125 (≈13.5 BTC) and #130 (≈14.0 BTC) **do** have exposed public keys. But at 125–130 bits, Pollard's Kangaroo needs ~2^62–2^65 operations — roughly **hundreds to thousands of years** on a single consumer GPU. Real, but out of reach without a cluster.
+**Verdict.** ⚠️ All re-checked puzzles still hold their funds, and the unsolved multiples of five from **#140 upward** (14.0–16.0 BTC) **do** have exposed public keys. At 140+ bits Pollard's Kangaroo needs ~2^69.5 operations or more — **hundreds of thousands of years** on a single consumer GPU. Real, but out of reach without a datacenter.
+
+> **Renumbered 2026-08.** This section previously named #125 and #130 as the exposed-pubkey targets. Those labels came from a table that read keyhunt's `unsolvedpuzzles.txt` positionally, which drifts by up to +10 because the file omits the already-solved multiples of five — the real targets are ten higher. See [PUZZLE_NUMBERING.md](PUZZLE_NUMBERING.md); `analysis/verify_registry.py` re-checks the labels against the chain at any time.
 
 ---
 

@@ -618,7 +618,9 @@ __kernel void initKangaroos(
     __global uint  *py,
     __global ulong *dist,
     __global int   *kind,
-    __global ulong *idist)           /* per-kangaroo random offset (also = dist) */
+    __global ulong *idist_lo,        /* per-kangaroo random offset, low 64 bits  */
+    __global ulong *idist_hi)        /* ... and high bits (offsets exceed 2^64   */
+                                     /*     for puzzles above 65 bits)           */
 {
     int tid   = get_global_id(0);
     int total = n_tame + n_wild * 2;
@@ -629,11 +631,18 @@ __kernel void initKangaroos(
        herd initialises fast. (Incomplete addition: the rare edge where the
        running sum equals +/- a table entry yields a wrong point for that one
        kangaroo — harmless, its bad DPs fail the pubkey verification.) */
-    ulong off = idist[tid];
+    ulong off_lo = idist_lo[tid];
+    ulong off_hi = idist_hi[tid];
     uint  ax[8], ay[8], az[8];
     bool  have = false;
     for (int j = 0; j < nbits; j++) {
-        if ((off >> j) & 1UL) {
+        /* Offsets span the whole interval, which exceeds 64 bits above puzzle
+           #65, so the scalar arrives as two words. Shifts are guarded because
+           shifting a ulong by >= 64 is undefined. */
+        ulong bit;
+        if (j < 64) bit = (off_lo >> j) & 1UL;
+        else        bit = (off_hi >> (j - 64)) & 1UL;
+        if (bit) {
             uint tx[8], ty[8];
             #pragma unroll 8
             for (int i = 0; i < 8; i++) { tx[i] = p2x[j*8+i]; ty[i] = p2y[j*8+i]; }
@@ -716,9 +725,14 @@ __kernel void initKangaroos(
         px[tid*8 + i] = rx[i];
         py[tid*8 + i] = ry[i];
     }
-    /* Initial distance = this kangaroo's own offset from its origin (tame_base,
-       +Q or -Q). The offset POINT in step_x[tid] and this scalar idist[tid] are
-       built together on the host, so position == (origin + idist)*G exactly. */
-    dist[tid] = idist[tid];
+    /* Distance starts at ZERO and accumulates only the WALK. The starting offset
+       lives on the host (as an unbounded Python int, keyed by thread id) and is
+       added back when a DP is decoded, so the reconstruction still sees
+       position == (origin + offset + walk)*G.
+       It used to be seeded with the offset itself, which overflowed this ulong
+       for any interval wider than 2^64 — i.e. every puzzle above #65, including
+       #71 — and the engine could not even initialise there. The walk alone stays
+       far below 2^64 (~2^56 for #71), so only the offset needed to move out. */
+    dist[tid] = 0UL;
     kind[tid] = kk;
 }

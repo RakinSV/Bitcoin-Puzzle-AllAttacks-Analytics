@@ -146,10 +146,18 @@ _add_addresses_from_known_keys()
 def get_puzzle(n: int) -> dict:
     """Returns {'addr':, 'start':, 'end':} for puzzle n. Raises KeyError if unknown."""
     if n not in PUZZLE_ADDRESSES:
+        lo_k, hi_k = min(PUZZLE_ADDRESSES), max(PUZZLE_ADDRESSES)
+        if lo_k <= n <= hi_k:
+            # Saying "known range: 1-160" here is misleading — n IS in that range.
+            # These are the solved multiples of five that the upstream source
+            # (a list of UNSOLVED puzzles) never contained.
+            raise KeyError(
+                f"No address on record for puzzle #{n}. It falls inside the "
+                f"covered range {lo_k}-{hi_k} but has no entry: puzzles "
+                f"{', '.join(str(m) for m in sorted(set(range(75, 121, 5)) - set(PUZZLE_ADDRESSES)))} "
+                f"are already solved and were absent from the source list.")
         raise KeyError(
-            f"No known address for puzzle #{n}. "
-            f"Known range: {min(PUZZLE_ADDRESSES)}-{max(PUZZLE_ADDRESSES)}"
-        )
+            f"No known address for puzzle #{n}. Known range: {lo_k}-{hi_k}")
     lo, hi = puzzle_range(n)
     return {'addr': PUZZLE_ADDRESSES[n], 'start': lo, 'end': hi}
 

@@ -378,14 +378,21 @@ class MainWindow(QMainWindow):
                    lambda: worker_argv("analysis.nonce_attack", ["--quick"]))
         self._card(v, "Pubkey EC-point patterns", "Harvest exposed pubkeys and test for structural relations.",
                    lambda: worker_argv("analysis.pubkey_pattern", ["--collect"]))
+        bs = QHBoxLayout()
+        bs.addWidget(QLabel("Demo puzzle #"))
+        self.bsgs_puzzle = QSpinBox(); self.bsgs_puzzle.setRange(1, 50)
+        self.bsgs_puzzle.setValue(30)
+        bs.addWidget(self.bsgs_puzzle); bs.addStretch(1)
         self._card(v, "BSGS solver (known pubkey, small ranges)",
                    "Splits the key into two halves — k = lo + i*m + j — and finds both at once, "
-                   "the same sqrt(W) saving Kangaroo gets but exact and easy to follow. It must "
-                   "STORE sqrt(W) points, so it fits intervals up to ~50 bits and refuses larger "
-                   "ones up front (a 140-bit range would need 8e20 table entries). For anything "
-                   "big, use Kangaroo — same time, constant memory.",
+                   "the same sqrt(W) saving Kangaroo gets but exact and easy to follow, which "
+                   "makes it a good cross-check on the GPU engine. It must STORE sqrt(W) points, "
+                   "so it only fits intervals up to ~50 bits — hence its own selector here, "
+                   "limited to puzzles whose key is known. For anything big use Kangaroo: same "
+                   "sqrt(W) time, constant memory.",
                    lambda: worker_argv("kangaroo.bsgs",
-                                       ["--puzzle", str(self.s_puzzle.value())]))
+                                       ["--puzzle", str(self.bsgs_puzzle.value())]),
+                   inputs=bs)
         self._card(v, "Pool coverage — skip what others already scanned",
                    "Reads how much of each keyspace the public pools have already swept (they "
                    "sweep sequentially from the start) so our random windows only draw from "

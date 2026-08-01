@@ -172,10 +172,9 @@ class KangarooEngine:
             if self.n_total % k_batch != 0:
                 raise ValueError(f"n_total={self.n_total} must be a multiple of "
                                  f"k_batch={k_batch} for the batch-inversion path")
-            n_wi = self.n_total // k_batch
-            if n_wi % 64 != 0:
-                raise ValueError(f"n_total//k_batch={n_wi} must be a multiple of 64 "
-                                 f"(work-group size); adjust n_tame/n_wild")
+            # No work-group divisibility requirement: step() pads the global size
+            # and the kernel drops the surplus threads. Requiring it rejected
+            # perfectly good small herds (a 768-kangaroo herd gives 48 work-items).
             import math as _m2
             rng = k_end - k_start + 1
             self._dp_capacity = MAX_DP_MB
@@ -364,10 +363,20 @@ class KangarooEngine:
             pt = point_double(pt)
 
         # Per-kangaroo random offsets (fast — no EC math on the host).
+        #
+        # The offsets span the whole interval, so above puzzle #65 they exceed
+        # 2^64 and cannot live in the GPU's ulong distance buffer at all (that
+        # overflow made the engine unable to even initialise on #71 — the very
+        # target it exists for). They are kept HERE as unbounded Python ints and
+        # handed to the kernel as two 64-bit words purely to build off*G; the
+        # GPU then accumulates only the walk, and _read_dp adds the offset back.
         n = self.n_total
         print(f"[KangarooGPU] Random offsets for {n} kangaroos (GPU-side off*G)...")
-        idist = np.array([random.randrange(1, rng_size) for _ in range(n)],
-                         dtype=np.uint64)
+        offsets = [random.randrange(1, rng_size) for _ in range(n)]
+        self._offsets = offsets
+        mask64 = (1 << 64) - 1
+        idist_lo = np.array([o & mask64 for o in offsets], dtype=np.uint64)
+        idist_hi = np.array([o >> 64 for o in offsets], dtype=np.uint64)
 
         mf = cl.mem_flags
         tb_x_buf  = cl.Buffer(self.ctx, mf.READ_ONLY|mf.COPY_HOST_PTR, hostbuf=tb_x)
@@ -376,14 +385,17 @@ class KangarooEngine:
         qy_buf    = cl.Buffer(self.ctx, mf.READ_ONLY|mf.COPY_HOST_PTR, hostbuf=qy)
         p2x_buf   = cl.Buffer(self.ctx, mf.READ_ONLY|mf.COPY_HOST_PTR, hostbuf=p2x)
         p2y_buf   = cl.Buffer(self.ctx, mf.READ_ONLY|mf.COPY_HOST_PTR, hostbuf=p2y)
-        id_buf    = cl.Buffer(self.ctx, mf.READ_ONLY|mf.COPY_HOST_PTR, hostbuf=idist)
+        id_lo_buf = cl.Buffer(self.ctx, mf.READ_ONLY|mf.COPY_HOST_PTR,
+                              hostbuf=idist_lo)
+        id_hi_buf = cl.Buffer(self.ctx, mf.READ_ONLY|mf.COPY_HOST_PTR,
+                              hostbuf=idist_hi)
 
         self._kern_init.set_args(
             np.int32(self.n_tame), np.int32(self.n_wild), np.int32(nbits),
             tb_x_buf, tb_y_buf, qx_buf, qy_buf,
             p2x_buf, p2y_buf,
             self.px_buf, self.py_buf, self.dist_buf, self.kind_buf,
-            id_buf
+            id_lo_buf, id_hi_buf
         )
         cl.enqueue_nd_range_kernel(self.queue, self._kern_init,
                                    (self.n_total,), None)
@@ -428,8 +440,13 @@ class KangarooEngine:
                 np.int32(self._dp_capacity),
                 self.dp_buf, self.cnt_buf
             )
+            # Pad the global size up to the work-group size instead of demanding
+            # that it divide evenly: the kernel already drops the surplus threads
+            # (`if (wid >= n_workitems) return;` after the LDS barrier), so a
+            # small herd no longer has to be rejected outright.
+            gsize = ((n_wi + 63) // 64) * 64
             cl.enqueue_nd_range_kernel(self.queue, self._kern_mb,
-                                       (n_wi,), (64,))
+                                       (gsize,), (64,))
         else:
             self._kern_step.set_args(
                 np.int32(self.n_total),
@@ -476,14 +493,23 @@ class KangarooEngine:
         cl.enqueue_copy(self.queue, buf_host, self.dp_buf)
         self.queue.finish()
 
+        # The GPU's `dist` holds only the WALK; the kangaroo's starting offset
+        # lives on the host because it exceeds 64 bits above puzzle #65. Add it
+        # back here (keyed by thread id) so everything downstream keeps seeing a
+        # single complete distance from the herd's origin.
+        offsets = getattr(self, '_offsets', None)
         results = []
         for i in range(n):
             off = i * entry_bytes
             x_arr = np.frombuffer(buf_host[off:off+32], dtype=np.uint32)
             x_val = _u256_to_int(x_arr)
-            dist  = int(np.frombuffer(buf_host[off+32:off+40], dtype=np.uint64)[0])
+            walk  = int(np.frombuffer(buf_host[off+32:off+40], dtype=np.uint64)[0])
             kind  = int(np.frombuffer(buf_host[off+40:off+44], dtype=np.int32)[0])
-            results.append({'x': x_val, 'dist': dist, 'kind': kind})
+            tid   = int(np.frombuffer(buf_host[off+44:off+48], dtype=np.int32)[0])
+            dist  = walk
+            if offsets is not None and 0 <= tid < len(offsets):
+                dist += offsets[tid]
+            results.append({'x': x_val, 'dist': dist, 'kind': kind, 'tid': tid})
         return results
 
     # ------------------------------------------------------------------

@@ -41,8 +41,11 @@ def test_round_trip():
         check("no prior totals on a fresh file", chk.load_lottery_totals() == (0, 0, 0.0))
         chk.save_lottery_stats(ADDR, LO, HI, keys_total=1_000, windows=2,
                                elapsed=30.0, speed=400.0)
-        check("stats file created", os.path.exists(p))
-        d1 = json.load(open(p))
+        # Lottery totals live in their own file so a resume-checkpoint write
+        # cannot destroy them (see test_resume_write_preserves_lottery_totals).
+        check("stats file created", os.path.exists(chk.lottery_path))
+        check("resume checkpoint untouched", not os.path.exists(p))
+        d1 = json.load(open(chk.lottery_path))
         check("tagged as pure-random mode", d1.get("mode") == "pure-random")
         check("keys recorded", d1.get("keys_searched") == 1_000)
         check("windows recorded", d1.get("windows") == 2)
@@ -92,6 +95,41 @@ def test_corrupt_file_is_survivable():
         check("corrupt file -> zero totals", Checkpoint(p).load_lottery_totals() == (0, 0, 0.0))
 
 
+def test_resume_write_preserves_lottery_totals():
+    """A CPU/linear run must not wipe days of accumulated lottery work.
+
+    Both writers used to share one file and disagree about its meaning: save()
+    omits `mode`, and load_lottery_totals() rejects anything without
+    `mode: pure-random`. One CPU-mode run therefore reset the counter — which is
+    exactly what happened to a live 160-trillion-key, 4,009-window total.
+    """
+    print("\n--- resume writes do not clobber lottery totals ---")
+    with tempfile.TemporaryDirectory() as d:
+        p = os.path.join(d, "checkpoint.json")
+        chk = Checkpoint(p)
+        chk.save_lottery_stats(ADDR, LO, HI, 160_000_000_000_000, 4_009,
+                               432_302.0, 379.7)
+        chk.save(k_current=LO + 5, k_start=LO, k_end=HI, address=ADDR,
+                 keys_total=777, speed=1.0)          # a CPU/linear-mode write
+        keys, windows, elapsed = chk.load_lottery_totals()
+        check("keys survived a resume write", keys == 160_000_000_000_000)
+        check("windows survived a resume write", windows == 4_009)
+        check("elapsed survived a resume write", elapsed == 432_302.0)
+        check("resume position still readable", chk.get_resume_key(0) == LO + 5)
+
+
+def test_legacy_shared_file_migrates():
+    """Totals banked in the old shared-file format must not be lost on upgrade."""
+    print("\n--- pre-split checkpoint migrates ---")
+    with tempfile.TemporaryDirectory() as d:
+        p = os.path.join(d, "checkpoint.json")
+        json.dump({"mode": "pure-random", "address": ADDR,
+                   "keys_searched": 12_345, "windows": 7, "elapsed_sec": 60.0},
+                  open(p, "w"))
+        check("legacy totals adopted",
+              Checkpoint(p).load_lottery_totals() == (12_345, 7, 60.0))
+
+
 if __name__ == "__main__":
     print("=" * 60)
     print("  Lottery data-collection regression tests")
@@ -100,6 +138,8 @@ if __name__ == "__main__":
     test_accumulates_across_restarts()
     test_ignores_foreign_checkpoint()
     test_corrupt_file_is_survivable()
+    test_resume_write_preserves_lottery_totals()
+    test_legacy_shared_file_migrates()
     print("\n" + "=" * 60)
     if FAILS:
         print(f"  {len(FAILS)} FAILED: {FAILS}")

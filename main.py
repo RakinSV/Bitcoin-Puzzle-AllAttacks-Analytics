@@ -828,6 +828,17 @@ def _benchmark_sweep(device_idx: int = 0,
         print(f"  vs current default ({DEFAULT_THREADS}/{DEFAULT_BLOCKS}/"
               f"{DEFAULT_POINTS_PER_THREAD} = {baseline['mkeys_mean']:.1f} Mkeys/s): "
               f"{speedup:.2f}x")
+        # The baseline is a single grid slot and can be spoiled by a cold cache or
+        # a driver hiccup, which then prints a spectacular but fake speed-up (this
+        # sweep once claimed 3.55x where a clean head-to-head showed 1.02x). Only
+        # trust a large factor after re-measuring both configs directly.
+        if speedup >= 1.5:
+            print(f"  [!] {speedup:.2f}x is suspiciously large for a parameter "
+                  f"change. Verify before believing it:")
+            print(f"      python main.py --bench --threads {DEFAULT_THREADS} "
+                  f"--blocks {DEFAULT_BLOCKS} --points {DEFAULT_POINTS_PER_THREAD}")
+            print(f"      python main.py --bench --threads {best['threads']} "
+                  f"--blocks {best['blocks']} --points {best['points']}")
     print(f"\n  To use: python main.py --puzzle 71 --mode gpu --pure-random "
           f"--threads {best['threads']} --blocks {best['blocks']} "
           f"--points {best['points']} --pool-avoid")

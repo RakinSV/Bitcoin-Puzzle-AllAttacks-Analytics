@@ -18,6 +18,7 @@ Run:  python tests/test_all_buttons.py
 import os
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 
@@ -62,8 +63,16 @@ def run_cmd(label, prog, args, budget):
     whether it actually exits cleanly. (The real app drains via QProcess.)
     """
     env = dict(os.environ, PYTHONUTF8="1", PYTHONIOENCODING="utf-8")
+    # Solver actions write checkpoint.json relative to the working directory, and
+    # the GUI builders offer no way to redirect it. Running them here would have
+    # the test scribble over the user's REAL run state — exercising the CPU-solve
+    # button once wiped a lottery counter that had been accumulating for days.
+    # Only the solvers get a scratch directory: the analysis actions need ROOT to
+    # reach their on-disk caches, and re-fetching everything makes them time out.
+    workdir = (tempfile.mkdtemp(prefix="btcpuzzle-buttons-")
+               if label.startswith("Solve") else ROOT)
     try:
-        p = subprocess.Popen([prog] + args, cwd=ROOT, env=env,
+        p = subprocess.Popen([prog] + args, cwd=workdir, env=env,
                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     except Exception as e:
         return "FAIL", f"could not launch: {e}"

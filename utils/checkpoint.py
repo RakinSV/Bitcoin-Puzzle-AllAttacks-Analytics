@@ -10,8 +10,39 @@ from pathlib import Path
 
 
 class Checkpoint:
+    """Resume checkpoints and cumulative lottery stats, kept in SEPARATE files.
+
+    They used to share one file, and the two writers disagree about what it
+    means: save() records a resume position and omits `mode`, while the lottery
+    records cumulative totals under `mode: pure-random`. load_lottery_totals()
+    rejects any file without that mode, so a single CPU or linear-mode run —
+    including the one the GUI button test performs — silently reset a lottery
+    counter that had been accumulating for days.
+
+    The lottery now writes alongside the checkpoint as `<name>_lottery.json`, so
+    neither writer can destroy the other. An existing lottery-format checkpoint
+    is imported once, so upgrading does not lose the totals already banked.
+    """
+
     def __init__(self, path: str = 'checkpoint.json'):
         self.path = Path(path)
+        self.lottery_path = self.path.with_name(
+            self.path.stem + '_lottery' + self.path.suffix)
+        self._migrate_legacy_lottery()
+
+    def _migrate_legacy_lottery(self):
+        """Adopt totals from an old shared-file checkpoint, once."""
+        if self.lottery_path.exists() or not self.path.exists():
+            return
+        try:
+            d = json.loads(self.path.read_text())
+        except Exception:
+            return
+        if isinstance(d, dict) and d.get('mode') == 'pure-random':
+            try:
+                self.lottery_path.write_text(json.dumps(d, indent=2))
+            except Exception:
+                pass
 
     def save(self, k_current: int, k_start: int, k_end: int,
              address: str, keys_total: int, speed: float = 0.0):
@@ -51,13 +82,21 @@ class Checkpoint:
             'speed_mkeys_sec':  round(speed, 2),
             'saved_at':         time.strftime('%Y-%m-%d %H:%M:%S'),
         }
-        tmp = self.path.with_suffix('.tmp')
+        # Own file: a resume-checkpoint write must never destroy these totals.
+        tmp = self.lottery_path.with_suffix('.tmp')
         tmp.write_text(json.dumps(data, indent=2))
-        tmp.replace(self.path)
+        tmp.replace(self.lottery_path)
 
     def load_lottery_totals(self) -> tuple:
         """Prior (keys_searched, windows, elapsed_sec) so totals accumulate."""
-        d = self.load()
+        d = None
+        if self.lottery_path.exists():
+            try:
+                d = json.loads(self.lottery_path.read_text())
+            except Exception:
+                d = None
+        if d is None:                     # pre-split file, still lottery-shaped
+            d = self.load()
         if not d or d.get('mode') != 'pure-random':
             return 0, 0, 0.0
         try:

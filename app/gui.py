@@ -378,6 +378,14 @@ class MainWindow(QMainWindow):
                    lambda: worker_argv("analysis.nonce_attack", ["--quick"]))
         self._card(v, "Pubkey EC-point patterns", "Harvest exposed pubkeys and test for structural relations.",
                    lambda: worker_argv("analysis.pubkey_pattern", ["--collect"]))
+        self._card(v, "BSGS solver (known pubkey, small ranges)",
+                   "Splits the key into two halves — k = lo + i*m + j — and finds both at once, "
+                   "the same sqrt(W) saving Kangaroo gets but exact and easy to follow. It must "
+                   "STORE sqrt(W) points, so it fits intervals up to ~50 bits and refuses larger "
+                   "ones up front (a 140-bit range would need 8e20 table entries). For anything "
+                   "big, use Kangaroo — same time, constant memory.",
+                   lambda: worker_argv("kangaroo.bsgs",
+                                       ["--puzzle", str(self.s_puzzle.value())]))
         self._card(v, "Pool coverage — skip what others already scanned",
                    "Reads how much of each keyspace the public pools have already swept (they "
                    "sweep sequentially from the start) so our random windows only draw from "

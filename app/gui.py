@@ -275,7 +275,7 @@ class MainWindow(QMainWindow):
         self.s_mode.currentIndexChanged.connect(self._solve_mode_changed)
         g.addWidget(self.s_mode, 0, 1, 1, 3)
         g.addWidget(QLabel("Puzzle #"), 1, 0)
-        self.s_puzzle = QSpinBox(); self.s_puzzle.setRange(1, 150); self.s_puzzle.setValue(71)
+        self.s_puzzle = QSpinBox(); self.s_puzzle.setRange(1, 160); self.s_puzzle.setValue(71)
         g.addWidget(self.s_puzzle, 1, 1)
         self.s_pool = QCheckBox("Pool-avoid"); self.s_pool.setChecked(True)
         g.addWidget(self.s_pool, 1, 2)

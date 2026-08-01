@@ -24,7 +24,7 @@ A full project wiki lives in [`docs/wiki/`](docs/wiki/Home.md):
 Solving puzzle #71 (a 71-bit key, ~7.1 BTC at stake) by blind brute force on a single consumer GPU would take on the order of **tens of thousands of years**. So the interesting work is *not* "spin a brute-forcer" — it's:
 
 1. **Can the keys be predicted?** If the creator used a weak RNG, an HD-wallet seed, a brainwallet passphrase, or reused an ECDSA nonce, the key falls in milliseconds. → *A battery of attacks that each test one hypothesis and falsify it with evidence.*
-2. **Can we exploit an exposed public key?** The moment anyone spends from a puzzle address, its public key hits the mempool. With a known pubkey, the problem collapses *in theory* from a 2^71 search to a **2^35.5 Pollard's Kangaroo walk**. → *A custom GPU Kangaroo engine + a live mempool sniper.* **In practice the engine currently only converges below ~37 bits — see the known issue below.**
+2. **Can we exploit an exposed public key?** The moment anyone spends from a puzzle address, its public key hits the mempool. With a known pubkey, the problem collapses *in theory* from a 2^71 search to a **2^35.5 Pollard's Kangaroo walk**. → *A custom GPU Kangaroo engine + a live mempool sniper.* **Verified end-to-end to ~58 bits on one RX 6600** (#58 in 44 s), with a measured K of 1.1–5.8 — the best runs match the published SOTA figure of 1.15.
 3. **How fast can a single RX 6600 actually go?** → *A hand-written OpenCL secp256k1 kernel, profiled and tuned to the metal.*
 
 ---
@@ -141,7 +141,40 @@ Nine independent attacks, each one a falsifiable hypothesis about how the keys *
 | 8 | **Ghost-solved re-verification** | A "solved" puzzle still holds BTC / exposed a pubkey | direct blockchain re-check |
 | 9 | **Multi-puzzle mempool sniper** | Win the race when a rival exposes a pubkey | WebSocket watcher + pre-warmed Kangaroo |
 
-**The honest verdict across all nine:** the creator used real randomness. Every statistical test passes (p ≥ 0.01), no RNG/HD/brainwallet/nonce shortcut exists, and the only keys with exposed public keys (#125, #130) are far beyond a single GPU's reach. That *negative* result is the most valuable output here — it tells you exactly where **not** to waste 35,000 GPU-years.
+**The honest verdict across all nine:** the creator used real randomness. Every statistical test passes (p ≥ 0.01), no RNG/HD/brainwallet/nonce shortcut exists, and the only keys with exposed public keys (**#135–160**, see the numbering note below) are far beyond a single GPU's reach. That *negative* result is the most valuable output here — it tells you exactly where **not** to waste 35,000 GPU-years.
+
+### Feasibility & verification tooling
+
+Added because "can this actually be won?" deserves a measured answer, not a hunch:
+
+| Tool | What it answers |
+|---|---|
+| **`analysis/feasible_targets.py`** | Checks all three requirements on-chain (unsolved · pubkey exposed · interval in reach) and ranks what is winnable. ETAs are anchored on a *measured* solve (#58 in 44 s), divided by your pool size. |
+| **`analysis/verify_registry.py`** | Re-labels every puzzle address from the chain — puzzle *N* holds exactly *N* × 0.1 BTC, so the funded amount is a self-verifying number. |
+| **`analysis/pool_coverage.py`** | Reads the public pools' swept frontier **live** so random windows only draw virgin keys. Strictly read-only: no registration, no reporting, nothing of yours leaves the machine. |
+| **`analysis/key_structure_hunt.py`** | 6 hypotheses on the 70 known keys (master-prefix, affine/LCG, compressibility, monobit+runs, shared low bits, gcd). All say **random**. |
+| **`analysis/creator_sig_attack.py`** | Nonce reuse, cross-key *r*-collisions, biased nonces, LLL — the one attack that ignores interval size. 140 signatures: nothing. |
+| **`analysis/lottery_math.py`** | KS (D=0.068 ≪ 0.163), χ² (5.43 ≪ 16.92), per-bit bias (z=2.08 < 3) → keys are **uniform**, so no search order beats another. |
+| **`kangaroo/bsgs.py`** | Baby-step giant-step: splits the key into halves (`k = lo + i·m + j`). Exact and easy to follow, and a cross-check on the GPU engine — but it must *store* √W points, so it refuses anything past ~50 bits and points you at Kangaroo. |
+
+### ⚠️ A numbering trap worth knowing about
+
+If you built a puzzle→address table by reading keyhunt's `tests/unsolvedpuzzles.txt`
+positionally (*"line N = puzzle N+66"*), **your high puzzles are mislabelled by up
+to +10**. That file lists only the puzzles unsolved when it was written, so the ten
+already-solved multiples of five (75, 80, … 120) are absent and the numbering
+drifts. We shipped that mistake for several releases.
+
+A +10 label error means searching an interval **1024× too small** to contain the
+key — the search just never succeeds and looks like bad luck.
+
+Verify yours in one command:
+
+```bash
+python analysis/verify_registry.py --max 160
+```
+
+Full write-up, proof, and fix: **[docs/PUZZLE_NUMBERING.md](docs/PUZZLE_NUMBERING.md)**.
 
 ---
 
@@ -198,7 +231,16 @@ Or drive the CLI directly:
 # Brute-force lottery on any puzzle
 python main.py --puzzle 71 --mode gpu --pure-random --pool-avoid
 
-# Pollard's Kangaroo against a known public key (verified for small intervals only - see known issue)
+# Baby-step giant-step — exact, known pubkey, intervals up to ~50 bits
+python -m kangaroo.bsgs --puzzle 30
+
+# Check every puzzle address is labelled with the right number (see docs/PUZZLE_NUMBERING.md)
+python analysis/verify_registry.py --max 160
+
+# What is actually winnable, on-chain, priced by a measured solve
+python analysis/feasible_targets.py --gpus 1
+
+# Pollard's Kangaroo against a known public key (verified to ~58 bits)
 python main.py --puzzle 71 --mode kangaroo --pubkey 02....
 
 # Map your GPU's throughput curve and find the VRAM cliff
@@ -222,6 +264,18 @@ See **[docs/THEORIES.md](docs/THEORIES.md)** for the deep dive on every theory t
 ## Disclaimer & ethics
 
 The Bitcoin Puzzle is a **public, intentional challenge**: the creator funded these addresses specifically to be solved, and claiming a key you find is the explicit point of the game. This repository is for **education and security research**. It contains no stolen data, no private keys to anyone's funds, and no malware. Be a good citizen — and never run a brute-forcer against an address that isn't part of the public puzzle.
+
+**On expectations:** nothing here will win you a puzzle on consumer hardware, and the repo says so with numbers rather than vibes. The smallest unsolved target (#71) has no exposed public key, so only brute force applies — the pools' own telemetry projects **centuries for the entire pool combined**. The puzzles that *do* expose a public key are 2¹³⁴ and larger. Run this to learn how the mathematics and the engineering work; don't run it as a financial plan.
+
+## Support the project
+
+If this was useful — the OpenCL kernel, the Kangaroo engine, the numbering write-up, or just the honest negative results — you can buy the author a coffee:
+
+```
+bc1qwnkyez3nv86dry54dqfjjtav29qqq72h69pevw
+```
+
+Stars and issues are just as welcome.
 
 ## License
 

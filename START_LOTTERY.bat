@@ -9,7 +9,7 @@ echo  BITCOIN PUZZLE - GPU LOTTERY  [OPTIMIZED for AMD RX 6600]
 echo ============================================================
 echo.
 echo  Optimizations active:
-echo    - GPU params 64/4096/112 = ~399 Mkeys/s (re-benched, off VRAM cliff)
+echo    - GPU params 128/2048/120 = ~405 Mkeys/s (re-benched 2026-08, off VRAM cliff)
 echo    - multiplyStep: N iterations (was 256) = 3.6x faster init
 echo    - jump-every: 1000 steps = ~1%% reinit overhead (was 30%%)
 echo    - Crash-safe: key saved to disk IMMEDIATELY when found
@@ -20,8 +20,11 @@ echo  !!! GPU sharing / overheating / TDR crash).
 echo ============================================================
 echo.
 echo  Which puzzle do you want to attack?
-echo    - #71-80 are realistically reachable on a consumer GPU.
-echo    - Above that the keyspace doubles every step (lottery odds).
+echo    - #71 is the smallest unsolved one, so it has the best odds.
+echo    - Those odds are still ~1 in 99,000 per YEAR on one card: no puzzle
+echo      is winnable by brute force on consumer hardware. Run this to learn
+echo      how it works, not as a way to make money.
+echo    - Every step up doubles the keyspace and halves the odds again.
 echo    - Run CHECK_PUZZLE_STATUS.bat to see what is still unsolved.
 echo.
 

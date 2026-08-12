@@ -39,14 +39,18 @@ _G  = (_GX, _GY)
 _INF = (0, 0)
 
 # ---- Параметры GPU (оптимизировано для AMD RX 6600) ----
-# Re-benched RX 6600 (2026-06): peak 64x4096x120 = 31.5M pts -> 406 Mkeys/s.
-# Curve: p112=399 p116=402 p120=406 p124=386 p128=354, then VRAM CLIFF
-# (p160=110, blocks6144=85). Old default p128 sat past the peak on the
-# downslope (354). p112 = ~399 Mkeys/s with the widest margin to the cliff.
-DEFAULT_THREADS           = 64       # local_work_size (wavefront=32 on RDNA2)
-DEFAULT_BLOCKS            = 4096     # global_work_size / threads
-DEFAULT_POINTS_PER_THREAD = 112      # points/thread; just below the ~31M-pt peak,
-                                     # safely clear of the ~33M+ VRAM cliff
+# Re-benched RX 6600 (2026-08) with a 35-point sweep, then confirmed by a direct
+# head-to-head because the sweep's own baseline slot came out cold and claimed an
+# impossible 3.55x. Measured twice, days apart:
+#     64/4096/112 -> 398.8 and 396.6 Mkeys/s
+#    128/2048/120 -> 406.3 and 404.8 Mkeys/s      (+2.0%)
+# Same ~31.5M total points either way, so this stays clear of the VRAM cliff
+# (p160=110, blocks6144=85 Mkeys/s); 128 threads simply schedules better on
+# RDNA2's wave32 than 64 does.
+DEFAULT_THREADS           = 128      # local_work_size (wavefront=32 on RDNA2)
+DEFAULT_BLOCKS            = 2048     # global_work_size / threads
+DEFAULT_POINTS_PER_THREAD = 120      # points/thread; 128*2048*120 = 31.5M points,
+                                     # the measured peak, below the ~33M+ cliff
 
 # ---- CLDeviceResult: структура результата из ядра ----
 # struct { int idx; bool compressed; uint x[8]; uint y[8]; uint digest[5]; }

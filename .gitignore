@@ -45,3 +45,5 @@ desktop.ini
 .wiki/
 nonce_sigs.json
 pool_coverage_cache.json
+puzzle_dataset.json
+puzzle_dataset.csv

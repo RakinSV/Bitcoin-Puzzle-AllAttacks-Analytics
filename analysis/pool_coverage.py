@@ -100,6 +100,77 @@ def src_btcpuzzle_info(n: int) -> dict | None:
 # NOTE ON WHAT THIS CANNOT SEE: solo searchers and private farms publish nothing,
 # and anyone sweeping RANDOMLY leaves no contiguous frontier to skip even in
 # principle. So this bounds the redundancy we can avoid; it does not eliminate it.
+def src_satoshipool_stats(n: int) -> dict | None:
+    """satoshipool.org publishes a real JSON API -- but AGGREGATES only.
+
+    It reports total_keys_done, speed and worker counts, and exposes zero
+    concrete ranges (no hex bounds anywhere in the payload). Its model is
+    rounds+segments rather than a sweep from the start of the interval, so there
+    is no contiguous frontier here to skip. Treating its key count as a frontier
+    would make us skip keys NOBODY has checked -- the one failure that could hide
+    the answer -- so this feeds statistics only, never pool_end.
+    """
+    txt = _get_text('https://satoshipool.org/api/stats')
+    if not txt:
+        return None
+    try:
+        d = json.loads(txt)
+    except Exception:
+        return None
+    if d.get('mode') != 'puzzle':
+        return None
+    # Confirm the pool is actually working on the puzzle we asked about.
+    try:
+        k_start, k_end = puzzle_range(n)
+    except Exception:
+        return None
+    from utils.puzzle_registry import PUZZLE_ADDRESSES
+    if d.get('puzzle_addr') != PUZZLE_ADDRESSES.get(n):
+        return None
+    try:
+        keys = int(d.get('total_keys_done', 0))
+    except Exception:
+        return None
+    if keys <= 0:
+        return None
+    return {
+        'source': 'satoshipool.org',
+        'keys_done': keys,
+        'keys_per_sec': d.get('keys_per_sec'),
+        'active_workers': d.get('active_workers'),
+        'uptime': d.get('uptime'),
+        'sequential': False,          # no frontier -> not usable for avoidance
+    }
+
+
+# Aggregate-only sources: they tell us how much of the space the community has
+# covered, but not WHERE, so they inform statistics and never pool_end.
+STATS_SOURCES = [src_satoshipool_stats]
+
+
+def community_stats(n: int, refresh: bool = False) -> list:
+    """Coverage reported by pools that publish totals but not ranges."""
+    cache = _load_cache()
+    key = 'stats_%d' % n
+    ent = cache.get(key)
+    if not refresh and ent and (time.time() - ent.get('ts', 0)) < CACHE_TTL:
+        return ent.get('data') or []
+    out = []
+    for src in STATS_SOURCES:
+        try:
+            d = src(n)
+        except Exception:
+            d = None
+        if d:
+            out.append(d)
+    if out:
+        cache[key] = {'ts': time.time(), 'data': out}
+        _save_cache(cache)
+    elif ent:
+        return ent.get('data') or []
+    return out
+
+
 SOURCES = [src_btcpuzzle_info]
 
 
@@ -216,7 +287,30 @@ def describe(n: int, refresh: bool = False) -> str:
             f"= {pct:.4f}%  ({d['source']})\n"
             f"        keys already swept by the pool: {keys:,}\n"
             f"        pool_end = {hex(pe)}  -> our random draws start above it\n"
-            f"        virgin space left: {(k_end - pe) / span * 100:.4f}%")
+            f"        virgin space left: {(k_end - pe) / span * 100:.4f}%"
+            + _stats_lines(n, span))
+
+
+def _stats_lines(n: int, span: int) -> str:
+    """Aggregate-only pools: report their volume, never fold it into pool_end.
+
+    Their totals say how much of the space the community has burned through, but
+    not WHERE. Folding that into the frontier would make us skip keys nobody has
+    checked -- the single failure mode that could hide the answer from us -- so it
+    is printed beside pool_end and deliberately kept out of it.
+    """
+    out = []
+    for d in community_stats(n):
+        kd = d.get('keys_done') or 0
+        rate = d.get('keys_per_sec') or 0
+        out.append("\n        + %s: %s keys = %.6f%% of the space"
+                   % (d['source'], f"{kd:,}", kd / span * 100))
+        out.append("\n          %s workers, %.2f Gkeys/s, up %s"
+                   % (d.get('active_workers', '?'), rate / 1e9,
+                      d.get('uptime', '?')))
+        out.append("\n          aggregate only -- no ranges published, so this"
+                   "\n          CANNOT be skipped: we do not know where they looked")
+    return "".join(out)
 
 
 def main():

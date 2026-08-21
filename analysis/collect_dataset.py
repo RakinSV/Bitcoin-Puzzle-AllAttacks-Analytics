@@ -41,6 +41,10 @@ OUT_JSON = os.path.join(os.path.dirname(__file__), '..', 'puzzle_dataset.json')
 OUT_CSV = os.path.join(os.path.dirname(__file__), '..', 'puzzle_dataset.csv')
 PUBKEY_CACHE = os.path.join(os.path.dirname(__file__), '..', 'puzzle_pubkeys.json')
 
+# Public pools coordinate only on the smallest unsolved puzzles; everything else
+# has no coverage data to fetch. Widen this if a pool ever opens another target.
+POOLED_CANDIDATES = (71, 72, 73, 74, 75)
+
 
 def _on_curve(x, y):
     return (y * y - x * x * x - 7) % P == 0
@@ -73,7 +77,7 @@ def _cached_pubkeys():
     return out
 
 
-def build(onchain=False, verbose=True):
+def build(onchain=False, pools=False, verbose=True):
     cached = _cached_pubkeys()
     rows = []
     status_cache = {}
@@ -130,6 +134,33 @@ def build(onchain=False, verbose=True):
             if verbose and n % 20 == 0:
                 print("\r  [chain] #%d ..." % n, end='', flush=True)
 
+        # Only the actively-pooled puzzles are worth a lookup: the pools work on
+        # #71-73 and nothing else, so querying all 150 was 150 network round
+        # trips to learn "no data" 147 times.
+        if pools and n in POOLED_CANDIDATES:
+            # Two DIFFERENT things, deliberately kept apart. `pool_end` is a
+            # contiguous frontier we may skip; `community_keys` is volume some
+            # pool burned through at unknown positions. Merging them would make
+            # us skip keys nobody checked.
+            try:
+                from analysis.pool_coverage import (get_pool_end, fetch_coverage,
+                                                    community_stats)
+                cov = fetch_coverage(n)
+                if cov:
+                    pe = get_pool_end(n)
+                    row['pool_frontier'] = hex(pe) if pe else None
+                    row['pool_ranges_done'] = cov.get('ranges_done')
+                    row['pool_ranges_total'] = cov.get('total_ranges')
+                    row['pool_source'] = cov.get('source')
+                    row['pool_skippable_keys'] = (pe - lo) if pe else 0
+                st = community_stats(n)
+                if st:
+                    row['community_keys'] = sum(d.get('keys_done') or 0
+                                                for d in st)
+                    row['community_sources'] = [d['source'] for d in st]
+            except Exception:
+                pass
+
         rows.append(row)
 
     if verbose and onchain:
@@ -141,12 +172,14 @@ def main():
     ap = argparse.ArgumentParser(description="Build the unified puzzle dataset")
     ap.add_argument('--onchain', action='store_true', help="add live chain state")
     ap.add_argument('--csv', action='store_true', help="also write CSV")
+    ap.add_argument('--pools', action='store_true',
+                    help="add public-pool coverage (frontier + aggregate stats)")
     args = ap.parse_args()
 
     print("=" * 70)
     print("  COLLECTING PUZZLE DATASET")
     print("=" * 70)
-    rows = build(onchain=args.onchain)
+    rows = build(onchain=args.onchain, pools=args.pools)
 
     with open(OUT_JSON, 'w', encoding='utf-8') as f:
         json.dump(rows, f, indent=1)
@@ -164,6 +197,16 @@ def main():
     print("  key->address check : %s"
           % ("all %d consistent" % have_priv if not mism
              else "MISMATCH at %s" % mism))
+    if args.pools:
+        pooled = [r for r in rows if r.get('pool_frontier')]
+        print("  with pool coverage : %d  (%s)"
+              % (len(pooled),
+                 ", ".join("#%d" % r['n'] for r in pooled) or "none"))
+        comm = [r for r in rows if r.get('community_keys')]
+        if comm:
+            print("  aggregate-only     : %s"
+                  % ", ".join("#%d %s keys" % (r['n'], f"{r['community_keys']:,}")
+                              for r in comm))
     if args.onchain:
         print("  solved (on-chain)  : %d"
               % sum(1 for r in rows if r.get('solved')))

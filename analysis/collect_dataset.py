@@ -77,6 +77,56 @@ def _cached_pubkeys():
     return out
 
 
+def _spend_facts(addr: str) -> dict:
+    """Facts that only a SPEND reveals: the public key, and when it happened.
+
+    An address gives up nothing until it spends. The moment it does, the signing
+    input carries the public key in clear and the block carries a timestamp.
+    That is exactly why the high multiples of five are attackable at all, and it
+    is the only way to date a solve.
+
+    The pubkey is taken from an input whose PREVOUT belongs to THIS address: a
+    spending transaction usually has several inputs, and taking the first one
+    would attribute somebody else's key to this puzzle.
+    """
+    out = {}
+    try:
+        from analysis.pubkey_pattern import (fetch_address_txs,
+                                             extract_pubkey_from_input)
+    except Exception:
+        return out
+    try:
+        txs = fetch_address_txs(addr, limit=25) or []
+    except Exception:
+        return out
+
+    best_time = None
+    for tx in txs:
+        for inp in tx.get('vin', []) or []:
+            prev = inp.get('prevout') or {}
+            if prev.get('scriptpubkey_address') != addr:
+                continue
+            if 'pubkey_exposed' not in out:
+                try:
+                    pk = extract_pubkey_from_input(inp)
+                except Exception:
+                    pk = None
+                if pk:
+                    out['pubkey_exposed'] = pk
+                    out['pubkey_exposed_txid'] = tx.get('txid')
+            stt = tx.get('status') or {}
+            t, h = stt.get('block_time'), stt.get('block_height')
+            # Earliest spend = when the prize was actually taken.
+            if t and (best_time is None or t < best_time):
+                best_time = t
+                out['spent_at_unix'] = t
+                out['spent_at'] = time.strftime('%Y-%m-%d %H:%M:%S',
+                                                time.gmtime(t))
+                out['spent_block'] = h
+                out['spent_txid'] = tx.get('txid')
+    return out
+
+
 def build(onchain=False, pools=False, verbose=True):
     cached = _cached_pubkeys()
     rows = []
@@ -131,7 +181,12 @@ def build(onchain=False, pools=False, verbose=True):
                 row['solved'] = bool(st['funded_sat'] and not st['balance_sat'])
                 # reward encodes the puzzle number for #71+ (N * 0.1 BTC)
                 row['reward_btc'] = st['funded_sat'] / 1e8
-            if verbose and n % 20 == 0:
+            # Only an address that has SPENT can reveal a pubkey or a date, so
+            # skip the network round trip for the ones that never moved.
+            if st and st.get('spent_sat'):
+                row.update(_spend_facts(addr))
+                time.sleep(0.1)
+            if verbose and n % 10 == 0:
                 print("\r  [chain] #%d ..." % n, end='', flush=True)
 
         # Only the actively-pooled puzzles are worth a lookup: the pools work on
@@ -208,6 +263,20 @@ def main():
                   % ", ".join("#%d %s keys" % (r['n'], f"{r['community_keys']:,}")
                               for r in comm))
     if args.onchain:
+        exposed = [r for r in rows if r.get('pubkey_exposed')]
+        dated = [r for r in rows if r.get('spent_at')]
+        print("  pubkeys exposed    : %d  (%s)"
+              % (len(exposed),
+                 ", ".join("#%d" % r['n'] for r in exposed[:14]) or "none"))
+        # `spent_at` is the FIRST spend, which is not the same as a solve: the
+        # creator's own 2019-06-01 transaction spent from several puzzles purely
+        # to publish their public keys. Label it for what it is.
+        print("  first-spend dates  : %d  (creator's 2019 reveal counts here "
+              "too, so this is not a solve date)" % len(dated))
+        live = [r for r in exposed if not r.get('solved')]
+        if live:
+            print("  UNSOLVED + exposed : %s"
+                  % ", ".join("#%d" % r['n'] for r in live))
         print("  solved (on-chain)  : %d"
               % sum(1 for r in rows if r.get('solved')))
     print("  written            : %s" % os.path.relpath(OUT_JSON))

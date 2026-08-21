@@ -92,8 +92,16 @@ def src_btcpuzzle_info(n: int) -> dict | None:
 #                       A parser here was dead code that always returned None,
 #                       which is worse than no parser: it implied multi-pool
 #                       coverage we never had.
-#   * btc-puzzle.com  — JS-only shell (~2 KB, nothing server-rendered).
-#   * privatekeys.pw  — 403 to programmatic requests.
+#   * btc-puzzle.com  — the JS shell was a red herring. Pulling the endpoints out
+#                       of its Vue bundle finds /api/get_status and friends, and
+#                       every one answers 401 {"message":"missing Token"}: the
+#                       coverage data is behind a login, not behind rendering.
+#                       Reaching it would mean registering an account, i.e.
+#                       joining their pool -- the opposite of read-only.
+#   * privatekeys.pw  — robots.txt names ClaudeBot under Disallow: / . That is an
+#                       explicit refusal, not a technical obstacle, so it is
+#                       respected. (It is a key directory anyway, with no
+#                       coverage frontier to harvest.)
 # btcpuzzle.info is also the only pool the coverage press refers to, as "the
 # community pool", singular.
 #

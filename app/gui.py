@@ -55,6 +55,46 @@ LOGS = os.path.join(ROOT, "logs")
 # of truth — the copy button reads it, so a mismatch here would silently send
 # someone's donation to the wrong place.
 DONATION_BTC = "bc1qwnkyez3nv86dry54dqfjjtav29qqq72h69pevw"
+
+# A found key is printed to stdout so it is visible immediately, and the worker's
+# stdout is mirrored into logs/. That would put the private key in the one file
+# people cheerfully attach to a bug report or leave in a cloud-synced folder --
+# and the Open logs button makes it a click away. The key belongs on screen and
+# in FOUND_KEY.txt, not in a shareable log, so it is redacted on the way out.
+# The banner still shows, so nothing is hidden from the person at the keyboard.
+# Redaction is CONTEXT-AWARE on purpose. A blanket hex rule also eats the search
+# position and the pool bounds, which are not secrets and are exactly what a log
+# is for -- a log where every number is <REDACTED> cannot diagnose anything. So a
+# hex value is only stripped when a key label sits next to it. A WIF needs no
+# context: that shape is a private key wherever it appears.
+# Decided LINE BY LINE rather than with one clever pattern. A single regex kept
+# either leaking (the CPU path prints "k = <decimal> = <hex>", whose decimal half
+# survived a hex-shaped rule) or over-matching, chewing a hex value in half. Per
+# line the rule is plain: does this line announce a key? Then nothing numeric on
+# it survives. Otherwise leave it completely alone.
+_KEY_LINE = re.compile(
+    r'KEY FOUND|Private key|\bWIF\b|\bHEX\b|Decimal|importprivkey', re.I)
+_LONG_HEX = re.compile(r'\b(?:0x)?[0-9a-fA-F]{8,64}\b')
+_LONG_DEC = re.compile(r'\b\d{10,}\b')
+# A WIF is unmistakable on its own, so it is stripped wherever it appears.
+_RE_WIF = re.compile(r'\b[5KL][1-9A-HJ-NP-Za-km-z]{50,51}\b')
+
+
+def _redact_secrets(text: str) -> str:
+    """Strip private-key material from anything written to a log file.
+
+    Ordinary telemetry survives -- speed, jump counts, the search position, pool
+    bounds -- because a log where every number reads <REDACTED> cannot diagnose
+    anything, which was the whole point of keeping one.
+    """
+    out = []
+    for line in text.split('\n'):
+        line = _RE_WIF.sub('<REDACTED-WIF-see-FOUND_KEY.txt>', line)
+        if _KEY_LINE.search(line):
+            line = _LONG_HEX.sub('<REDACTED-see-FOUND_KEY.txt>', line)
+            line = _LONG_DEC.sub('<REDACTED>', line)
+        out.append(line)
+    return '\n'.join(out)
 REPORTS = os.path.join(ROOT, "reports")
 
 # ── live-output parsers ──────────────────────────────────────────────────────
@@ -679,7 +719,7 @@ class MainWindow(QMainWindow):
         data = bytes(self.proc.readAllStandardOutput()).decode("utf-8", "replace")
         self._append(data, None)
         if self.logfile:
-            self.logfile.write(data); self.logfile.flush()
+            self.logfile.write(_redact_secrets(data)); self.logfile.flush()
         for line in data.splitlines():
             self._parse(line)
 

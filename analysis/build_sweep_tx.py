@@ -36,6 +36,7 @@ Usage:
 import argparse
 import json
 import os
+import re
 import sys
 import time
 
@@ -49,6 +50,43 @@ from analysis.utxo_snapshot import fetch_utxos, expected_script_pubkey
 VB_PER_INPUT = 148
 VB_PER_OUTPUT = 34
 VB_OVERHEAD = 10
+
+
+def read_found_wif(n: int) -> tuple:
+    """Pull the WIF out of FOUND_KEY.txt, so it never has to be typed.
+
+    Passing the key on the command line puts it in shell history; making the
+    user copy it by hand invites a transcription error in the one string that
+    cannot tolerate one. Both are avoided by reading the file the search already
+    wrote. It sits in the same directory, is gitignored like the sweep script,
+    and has to reach the offline machine anyway -- keeping it out of the script
+    protects nothing while costing a manual step.
+
+    Returns (wif, source_path) or (None, None).
+    """
+    root = os.path.join(os.path.dirname(__file__), '..')
+    names = ('FOUND_KEY.txt', 'FOUND_KEY_EMERGENCY.txt')
+    # Word boundaries as an explicit look-around rather than the escape:
+    # an earlier edit put literal BACKSPACE bytes (0x08) here, because a
+    # backslash-b inside a normal Python string is an escape, not two
+    # characters. The line rendered identically in every listing while
+    # never matching anything. This shape cannot fail that way.
+    pat = re.compile('(?<![1-9A-HJ-NP-Za-km-z])'
+                     '([5KL][1-9A-HJ-NP-Za-km-z]{50,51})'
+                     '(?![1-9A-HJ-NP-Za-km-z])')
+    for name in names:
+        path = os.path.join(root, name)
+        if not os.path.exists(path):
+            continue
+        try:
+            with open(path, encoding='utf-8', errors='replace') as f:
+                m = pat.search(f.read())
+        except Exception:
+            continue
+        if m:
+            return m.group(1), name
+    return None, None
+
 
 
 def select_inputs(utxos, fee_rate, take_all=False):
@@ -163,12 +201,22 @@ def main():
                     help="sat/vB (default 20; check mempool.space when spending)")
     ap.add_argument('--all', action='store_true', dest='take_all',
                     help="include dust that costs more to spend than it holds")
-    ap.add_argument('--wif', help="embed the key (default: leave a placeholder)")
+    ap.add_argument('--wif', help="use this key instead of reading FOUND_KEY.txt")
+    ap.add_argument('--no-key', action='store_true',
+                    help="leave a placeholder instead of filling the key in")
     ap.add_argument('--out')
     args = ap.parse_args()
 
+    # Fill the key in by default. It has to reach the offline machine anyway to
+    # sign with, so withholding it here protects nothing and only invites a
+    # hand-copy of the one string that cannot survive a typo. Reading the file
+    # also keeps it off the command line, and out of shell history.
+    wif, src = (args.wif, 'the --wif argument') if args.wif else (None, None)
+    if not wif and not args.no_key:
+        wif, src = read_found_wif(args.puzzle)
+
     text, info = build(args.puzzle, args.dest, args.fee_rate,
-                       args.take_all, args.wif)
+                       args.take_all, wif)
     path = args.out or os.path.join(os.path.dirname(__file__), '..',
                                     'SWEEP_puzzle%d.sh' % args.puzzle)
     with open(path, 'w', encoding='utf-8', newline='\n') as f:
@@ -185,9 +233,15 @@ def main():
                                                     f"{info['fee']:,}"))
     print("  you receive : %.8f BTC" % (info['send'] / 1e8))
     print("  written     : %s" % os.path.basename(path))
-    if not args.wif:
-        print("\n  The key is a placeholder. Paste the WIF from FOUND_KEY.txt on")
-        print("  the offline machine -- it does not need to travel on the stick.")
+    if wif:
+        print("  key         : filled in from %s" % src)
+        print("\n  THIS FILE NOW CONTAINS YOUR PRIVATE KEY.")
+        print("  Treat it exactly like FOUND_KEY.txt: it is gitignored, but keep")
+        print("  it off shared drives, and wipe the USB stick after signing.")
+    else:
+        print("  key         : PLACEHOLDER -- no FOUND_KEY.txt found yet")
+        print("\n  Nothing has been solved yet, so there is no key to fill in.")
+        print("  Re-run this after a find and the WIF drops in automatically.")
     print("=" * 66)
 
 

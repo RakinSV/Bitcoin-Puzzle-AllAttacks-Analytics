@@ -3,9 +3,9 @@
   "address": "1PWo3JeB9jrGwfHDNpdGK54CRas7fsVzXU",
   "range_start": "0x400000000000000000",
   "range_end": "0x7fffffffffffffffff",
-  "keys_searched": 600766586814464,
-  "windows": 4852,
-  "elapsed_sec": 1559506.0,
-  "speed_mkeys_sec": 388.67,
-  "saved_at": "2026-08-21 18:43:47"
+  "keys_searched": 735205658722304,
+  "windows": 5694,
+  "elapsed_sec": 1903259.2,
+  "speed_mkeys_sec": 374.56,
+  "saved_at": "2026-08-25 18:24:33"
 }

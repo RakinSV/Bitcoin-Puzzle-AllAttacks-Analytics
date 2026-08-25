@@ -879,6 +879,9 @@ def main():
     parser.add_argument('--jump-every',  type=int, default=200,
                         help='Steps between random jumps in --pure-random mode (default: 200 '
                              '≈ 6.7B keys/window at 33.5M pts/step, ~5%% reinit overhead)')
+    parser.add_argument('--no-utxo-snapshot', action='store_true',
+                        help='Skip the pre-search UTXO snapshot (it is only '
+                             'preparation for spending; the search is identical)')
     parser.add_argument('--pool-avoid', action='store_true',
                         help='Skip region already covered by btcpuzzle.info pool (~0.86%% of range). '
                              'Pool scans sequentially from start; we cover rest randomly.')
@@ -1006,6 +1009,21 @@ def main():
         pool_end = 0
         if getattr(args, 'pool_avoid', False):
             pool_end = _get_pool_end(args.puzzle, pz)
+
+        # Snapshot what spending this address will require, BEFORE the search
+        # starts. Once a key turns up the clock is running: the spending
+        # transaction publishes the public key, and anything it fails to sweep is
+        # claimable by anyone watching the mempool. That is the wrong moment to be
+        # querying an explorer -- and #71 alone carries 59 separate outputs, since
+        # people have been adding donations for years, so there is real scope to
+        # miss one. Failure here is never fatal: it is preparation, not the search.
+        if not getattr(args, 'no_utxo_snapshot', False):
+            try:
+                from analysis.utxo_snapshot import snapshot as _utxo_snapshot
+                _utxo_snapshot(args.puzzle, verbose=True)
+            except Exception as e:
+                print(f"[utxo] snapshot skipped ({type(e).__name__}) — "
+                      f"the search is unaffected")
 
         result = gpu_search(
             address            = pz['addr'],

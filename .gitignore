@@ -50,3 +50,4 @@ puzzle_dataset.csv
 UTXO_puzzle*.txt
 SWEEP_puzzle*.sh
 checkpoint_lottery*.json
+SWEEP_puzzle*.ps1

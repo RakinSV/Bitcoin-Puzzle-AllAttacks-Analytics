@@ -99,7 +99,25 @@ def select_inputs(utxos, fee_rate, take_all=False):
     return keep, skip
 
 
-def build(n, dest, fee_rate, take_all=False, wif=None, utxos=None):
+def _finish(L, A, n, fmt):
+    """The closing notes, identical whichever shell the script targets."""
+    A("")
+    A("# --- 4. broadcast (ONLINE machine) -------------------------------------")
+    A("# The signed hex is safe to carry out; it no longer contains the key,")
+    A("# but it DOES expose the public key the moment it is seen. Prefer a")
+    A("# private relay so it is mined rather than front-run:")
+    A("#   https://slipstream.mara.com")
+    A("# or:  bitcoin-cli sendrawtransaction \"<SIGNED_HEX>\"")
+    A("")
+    A("# " + "=" * 68)
+    A("# Re-check balances before using this: donations still arrive, and any")
+    A("# new output not listed here will be left behind.")
+    return chr(10).join(L)
+
+
+
+def build(n, dest, fee_rate, take_all=False, wif=None, utxos=None,
+          fmt='sh'):
     """Build the command text. Pass `utxos` to reuse an already-fetched list.
 
     Fetching them costs one request per output plus a transaction lookup each --
@@ -171,6 +189,36 @@ def build(n, dest, fee_rate, take_all=False, wif=None, utxos=None):
     A("#   bitcoind -connect=0 -listen=0 -maxconnections=0")
     A("# " + "=" * 68)
     A("")
+    if fmt == 'ps1':
+        A("# PowerShell. Bitcoin Core does not run scripts -- bitcoin-cli is just a")
+        A("# command-line tool, and this file only calls it. Run with:")
+        A("#   powershell -ExecutionPolicy Bypass -File SWEEP_puzzle%d.ps1" % n)
+        A("# The JSON below is deliberately space-free so PowerShell passes each")
+        A("# argument to a native exe intact.")
+        A("")
+        A("# --- 1. build the unsigned transaction ---------------------------------")
+        A("$inputs  = '%s'" % json.dumps(inputs, separators=(',', ':')))
+        A("$outputs = '%s'" % json.dumps(outputs, separators=(',', ':')))
+        A("$raw = & bitcoin-cli createrawtransaction $inputs $outputs")
+        A("$raw")
+        A("")
+        A("# --- 2. READ IT BACK before signing ------------------------------------")
+        A("# Confirm the destination and the amount with your own eyes. The fee is")
+        A("# the difference between the inputs and this output -- Core never shows")
+        A("# it as a field, because a transaction does not contain one.")
+        A("& bitcoin-cli decoderawtransaction $raw")
+        A("")
+        A("# --- 3. sign with the key, without importing it ------------------------")
+        A("$keys    = '[\"%s\"]'" % (wif or "<WIF_FROM_FOUND_KEY.txt>"))
+        A("$prevtxs = '%s'" % json.dumps(prevtxs, separators=(',', ':')))
+        A("$signed = & bitcoin-cli signrawtransactionwithkey $raw $keys $prevtxs")
+        A("$signed")
+        A("")
+        A("# Confirm the output contains  \"complete\": true , then keep the hex:")
+        A("#   ($signed | ConvertFrom-Json).hex | Set-Content signed_tx.txt")
+        return _finish(L, A, n, fmt), {'inputs': len(keep), 'skipped': len(skip),
+                                        'fee': fee, 'send': send, 'vsize': vsize}
+
     A("# The raw transaction is thousands of hex characters. It is captured in a")
     A("# shell variable rather than pasted between steps: copying it by hand is")
     A("# an easy way to drop a character and produce something unspendable.")
@@ -226,6 +274,10 @@ def main():
     ap.add_argument('--wif', help="use this key instead of reading FOUND_KEY.txt")
     ap.add_argument('--no-key', action='store_true',
                     help="leave a placeholder instead of filling the key in")
+    ap.add_argument('--format', choices=('sh', 'ps1'), default='sh',
+                    help="sh for Linux/macOS/Git Bash (default), ps1 for "
+                         "Windows PowerShell -- Bitcoin Core runs neither, "
+                         "these only call bitcoin-cli")
     ap.add_argument('--out')
     args = ap.parse_args()
 
@@ -238,9 +290,10 @@ def main():
         wif, src = read_found_wif(args.puzzle)
 
     text, info = build(args.puzzle, args.dest, args.fee_rate,
-                       args.take_all, wif)
+                       args.take_all, wif, fmt=args.format)
+    ext = 'ps1' if args.format == 'ps1' else 'sh'
     path = args.out or os.path.join(os.path.dirname(__file__), '..',
-                                    'SWEEP_puzzle%d.sh' % args.puzzle)
+                                    'SWEEP_puzzle%d.%s' % (args.puzzle, ext))
     with open(path, 'w', encoding='utf-8', newline='\n') as f:
         f.write(text + "\n")
         f.flush()

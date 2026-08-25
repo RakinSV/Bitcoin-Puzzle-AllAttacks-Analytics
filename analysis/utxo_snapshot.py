@@ -182,6 +182,7 @@ def snapshot(n: int, out_path: str = None, verbose: bool = True) -> str | None:
         total = sum(u['value_sat'] for u in utxos)
         print("[utxo] #%d: %d output(s), %.8f BTC -> %s"
               % (n, len(utxos), total / 1e8, os.path.basename(path)))
+    snapshot.last_utxos = utxos      # so a caller can reuse them, not re-fetch
     return path
 
 

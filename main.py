@@ -1025,6 +1025,36 @@ def main():
                 print(f"[utxo] snapshot skipped ({type(e).__name__}) — "
                       f"the search is unaffected")
 
+            # Draft the spending script too. It cannot be finished here -- only
+            # you know which address the coins should go to -- but leaving it
+            # ungenerated meant the one thing needed under time pressure did not
+            # exist yet. Better to write it now with the destination as the sole
+            # blank, so the find turns into "edit one line" rather than "work out
+            # how to build a transaction".
+            try:
+                from analysis.utxo_snapshot import snapshot as _snap
+                from analysis.build_sweep_tx import build as _build_sweep
+                # Reuse what the snapshot just fetched: re-reading 59 outputs
+                # costs about a minute of network round trips for identical data,
+                # and that minute is spent before the first key is tried.
+                _text, _info = _build_sweep(args.puzzle,
+                                            '<PUT_YOUR_RECEIVING_ADDRESS_HERE>',
+                                            fee_rate=20,
+                                            utxos=getattr(_snap, 'last_utxos',
+                                                          None))
+                _sp = os.path.join(os.path.dirname(__file__),
+                                   f'SWEEP_puzzle{args.puzzle}.sh')
+                with open(_sp, 'w', encoding='utf-8', newline='\n') as _f:
+                    _f.write(_text + "\n")
+                print(f"[sweep] draft written -> {os.path.basename(_sp)} "
+                      f"({_info['inputs']} inputs, "
+                      f"{_info['send']/1e8:.8f} BTC at 20 sat/vB)")
+                print(f"[sweep] fill in your address, and re-run "
+                      f"analysis/build_sweep_tx.py to refresh the fee rate")
+            except Exception as e:
+                print(f"[sweep] draft skipped ({type(e).__name__}) — "
+                      f"the search is unaffected")
+
         result = gpu_search(
             address            = pz['addr'],
             k_start            = pz['start'],

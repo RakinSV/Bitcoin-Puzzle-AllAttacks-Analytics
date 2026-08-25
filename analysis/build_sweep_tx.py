@@ -99,12 +99,20 @@ def select_inputs(utxos, fee_rate, take_all=False):
     return keep, skip
 
 
-def build(n, dest, fee_rate, take_all=False, wif=None):
+def build(n, dest, fee_rate, take_all=False, wif=None, utxos=None):
+    """Build the command text. Pass `utxos` to reuse an already-fetched list.
+
+    Fetching them costs one request per output plus a transaction lookup each --
+    around a minute for #71's 59 outputs. The lottery takes the snapshot and then
+    drafts the sweep back to back, so re-fetching there doubled the delay before
+    a single key was tried, for identical data.
+    """
     address = PUZZLE_ADDRESSES.get(n)
     if not address:
         raise SystemExit("no address on record for puzzle #%d" % n)
 
-    utxos = fetch_utxos(address)
+    if utxos is None:
+        utxos = fetch_utxos(address)
     if not utxos:
         raise SystemExit("could not read UTXOs (offline?) -- run "
                          "analysis/utxo_snapshot.py first")

@@ -99,6 +99,18 @@ def select_inputs(utxos, fee_rate, take_all=False):
     return keep, skip
 
 
+def _ps_json(obj):
+    """JSON for a PowerShell variable handed to a native exe.
+
+    PowerShell 5.1 strips the inner double quotes on its way to an .exe, so a
+    plain single-quoted JSON string arrives as [{txid:...,vout:5}] and
+    bitcoin-cli rejects it. Verified against a real Bitcoin Core install:
+    backslash-escaping each inner quote is what survives the hand-off.
+    """
+    return json.dumps(obj, separators=(',', ':')).replace('"', '\\"')
+
+
+
 def _finish(L, A, n, fmt):
     """The closing notes, identical whichever shell the script targets."""
     A("")
@@ -197,8 +209,10 @@ def build(n, dest, fee_rate, take_all=False, wif=None, utxos=None,
         A("# argument to a native exe intact.")
         A("")
         A("# --- 1. build the unsigned transaction ---------------------------------")
-        A("$inputs  = '%s'" % json.dumps(inputs, separators=(',', ':')))
-        A("$outputs = '%s'" % json.dumps(outputs, separators=(',', ':')))
+        A("# Inner quotes are backslash-escaped: PowerShell 5.1 strips them on")
+        A("# the way to a native exe, and bitcoin-cli then rejects the JSON.")
+        A("$inputs  = '%s'" % _ps_json(inputs))
+        A("$outputs = '%s'" % _ps_json(outputs))
         A("$raw = & bitcoin-cli createrawtransaction $inputs $outputs")
         A("$raw")
         A("")
@@ -209,8 +223,8 @@ def build(n, dest, fee_rate, take_all=False, wif=None, utxos=None,
         A("& bitcoin-cli decoderawtransaction $raw")
         A("")
         A("# --- 3. sign with the key, without importing it ------------------------")
-        A("$keys    = '[\"%s\"]'" % (wif or "<WIF_FROM_FOUND_KEY.txt>"))
-        A("$prevtxs = '%s'" % json.dumps(prevtxs, separators=(',', ':')))
+        A("$keys    = '%s'" % _ps_json([wif or "<WIF_FROM_FOUND_KEY.txt>"]))
+        A("$prevtxs = '%s'" % _ps_json(prevtxs))
         A("$signed = & bitcoin-cli signrawtransactionwithkey $raw $keys $prevtxs")
         A("$signed")
         A("")

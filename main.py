@@ -144,7 +144,8 @@ def _pure_random_search(address: str, k_start: int, k_end: int,
                         points_per_thread: int = 8,
                         jump_every: int = 200,
                         pool_end: int = 0,
-                        checkpoint_file: str = 'checkpoint.json') -> int | None:
+                        checkpoint_file: str = 'checkpoint.json',
+                        puzzle_num: int = None) -> int | None:
     """
     TRUE random lottery mode.
 
@@ -163,7 +164,7 @@ def _pure_random_search(address: str, k_start: int, k_end: int,
 
     # Cumulative lottery stats survive restarts: a random search has no resume
     # point, but the work done is still worth recording.
-    chk = Checkpoint(checkpoint_file)
+    chk = Checkpoint(checkpoint_file, puzzle=puzzle_num)
     prior_keys, prior_windows, prior_elapsed = chk.load_lottery_totals()
 
     total_keys = 0
@@ -270,7 +271,8 @@ def gpu_search(address: str, k_start: int, k_end: int,
                coverage_file:     str  = 'coverage.json',
                pure_random:       bool = False,
                jump_every:        int  = 200,
-               pool_end:          int  = 0):
+               pool_end:          int  = 0,
+               puzzle_num:        int  = None):
     """
     GPU search via PyOpenCL + BitCrack kernel.
     Optimized for AMD RX 6600 (gfx1032).
@@ -285,7 +287,7 @@ def gpu_search(address: str, k_start: int, k_end: int,
         return _pure_random_search(
             address, k_start, k_end, device_idx,
             threads, blocks, points_per_thread, jump_every, pool_end,
-            checkpoint_file)
+            checkpoint_file, puzzle_num)
 
     cov = CoverageMap(coverage_file, k_start, k_end)
     chk = Checkpoint(checkpoint_file)
@@ -1038,7 +1040,7 @@ def main():
                 # costs about a minute of network round trips for identical data,
                 # and that minute is spent before the first key is tried.
                 _text, _info = _build_sweep(args.puzzle,
-                                            '<PUT_YOUR_RECEIVING_ADDRESS_HERE>',
+                                            'moi-btc-adress',
                                             fee_rate=20,
                                             utxos=getattr(_snap, 'last_utxos',
                                                           None))
@@ -1069,6 +1071,7 @@ def main():
             pure_random        = args.pure_random,
             jump_every         = args.jump_every,
             pool_end           = pool_end,
+            puzzle_num         = args.puzzle,
         )
 
     if result:

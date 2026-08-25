@@ -24,25 +24,56 @@ class Checkpoint:
     is imported once, so upgrading does not lose the totals already banked.
     """
 
-    def __init__(self, path: str = 'checkpoint.json'):
+    def __init__(self, path: str = 'checkpoint.json', puzzle: int = None):
         self.path = Path(path)
+        self.puzzle = puzzle
+        # Lottery totals are PER PUZZLE. One shared file meant switching target
+        # silently poured the new puzzle's work into the old one's counter --
+        # #89's keys landed on #71's tally, and neither number meant anything
+        # afterwards. A file per puzzle keeps each history honest and lets you
+        # go back to a target without having lost what you already did on it.
+        suffix = '_lottery' if puzzle is None else '_lottery_p%d' % puzzle
         self.lottery_path = self.path.with_name(
-            self.path.stem + '_lottery' + self.path.suffix)
+            self.path.stem + suffix + self.path.suffix)
         self._migrate_legacy_lottery()
 
     def _migrate_legacy_lottery(self):
-        """Adopt totals from an old shared-file checkpoint, once."""
-        if self.lottery_path.exists() or not self.path.exists():
+        """Adopt totals from an older, less specific file -- once.
+
+        Two generations to inherit from: the original shared checkpoint.json, and
+        the puzzle-agnostic <name>_lottery.json that replaced it. Either is only
+        adopted when its recorded address matches this puzzle, so a mixed-target
+        tally is never silently attributed to the wrong puzzle.
+        """
+        if self.lottery_path.exists():
             return
-        try:
-            d = json.loads(self.path.read_text())
-        except Exception:
-            return
-        if isinstance(d, dict) and d.get('mode') == 'pure-random':
+        want_addr = None
+        if self.puzzle is not None:
+            try:
+                from utils.puzzle_registry import PUZZLE_ADDRESSES
+                want_addr = PUZZLE_ADDRESSES.get(self.puzzle)
+            except Exception:
+                want_addr = None
+
+        legacy = [self.path.with_name(self.path.stem + '_lottery'
+                                      + self.path.suffix),
+                  self.path]
+        for src in legacy:
+            if not src.exists():
+                continue
+            try:
+                d = json.loads(src.read_text())
+            except Exception:
+                continue
+            if not isinstance(d, dict) or d.get('mode') != 'pure-random':
+                continue
+            if want_addr and d.get('address') != want_addr:
+                continue          # belongs to a different puzzle -- leave it
             try:
                 self.lottery_path.write_text(json.dumps(d, indent=2))
             except Exception:
                 pass
+            return
 
     def save(self, k_current: int, k_start: int, k_end: int,
              address: str, keys_total: int, speed: float = 0.0):
@@ -99,6 +130,17 @@ class Checkpoint:
             d = self.load()
         if not d or d.get('mode') != 'pure-random':
             return 0, 0, 0.0
+        # The pre-split fallback is puzzle-agnostic, so it happily handed #71's
+        # tally to #89. Whatever it returns must belong to THIS puzzle: a wrong
+        # total is worse than none, because it looks authoritative.
+        if self.puzzle is not None and d.get('address'):
+            try:
+                from utils.puzzle_registry import PUZZLE_ADDRESSES
+                want = PUZZLE_ADDRESSES.get(self.puzzle)
+            except Exception:
+                want = None
+            if want and d['address'] != want:
+                return 0, 0, 0.0
         try:
             return (int(d.get('keys_searched', 0)), int(d.get('windows', 0)),
                     float(d.get('elapsed_sec', 0.0)))

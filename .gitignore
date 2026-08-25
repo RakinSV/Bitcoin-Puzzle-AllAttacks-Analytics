@@ -48,3 +48,4 @@ pool_coverage_cache.json
 puzzle_dataset.json
 puzzle_dataset.csv
 UTXO_puzzle*.txt
+SWEEP_puzzle*.sh
